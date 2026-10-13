@@ -1,0 +1,35 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><title>Eagle 多媒体 UI fixture</title><style>
+body{background:#141a23;font-family:system-ui,sans-serif;color:#d9e4f5;margin:24px}.layout{display:grid;grid-template-columns:570px 570px;gap:24px}.mock-node{background:#29313f;border:1px solid #52667e;border-radius:12px;padding:10px;height:fit-content;margin-bottom:20px}.title{font-size:17px;padding:4px 8px 12px}.ports{color:#9db3cd;font-size:12px;padding:0 8px 8px}.caption{font-size:12px;color:#91a8c4;padding:10px}.mock-outputs{font-size:12px;color:#bbd5e9;display:grid;grid-template-columns:repeat(3,1fr);gap:10px;padding:10px}</style></head>
+<body><div class="layout"><div id="input-column"></div><div id="output-column"></div></div>
+<script type="module">
+import { app } from '/scripts/app.js';await import('/web/eagle_assets.js');
+const host=location.origin;
+const definitions=[
+ ['EagleMediaImport','media','Eagle 多目录媒体导入','query → 图片 / 视频 / 音频 / 模型',null],
+ ['EagleAssetSort','images','Eagle 图片排序','图片资产 → 图片资产','image'],
+ ['EagleVideoSort','videos','Eagle 视频排序','视频资产 → 视频资产','video'],
+ ['EagleAudioSort','audios','Eagle 音频排序','音频资产 → 音频资产','audio'],
+ ['EagleModelSort','models','Eagle 模型排序','模型资产 → 模型资产','model'],
+ ['EagleAssetSplit','image-split','Eagle 图片拆分','输出：IMAGE × 9','image'],
+ ['EagleVideoSplit','video-split','Eagle 视频拆分','输出：IMAGE 帧批次 × 3','video'],
+ ['EagleAudioSplit','audio-split','Eagle 音频拆分','输出：AUDIO × 3','audio'],
+ ['EagleModelSplit','model-split','Eagle 模型拆分','输出：STRING 路径 × 9','model'],
+ ['EagleAssetExport','export','Eagle 图片导出 / 保存 / 预览','images / tags / annotation → 原生图片预览',null],
+];
+const importState={version:1,host,token:'',folder_count:1,folder_ids:[''],types:[],folder_id:'',limit:20,include_children:false,selection_mode:'manual',selected_ids:[],manual_query:'',locked:null,match_mode:'exact',video_fps:24,video_start:0,video_duration:2};
+globalThis.testNodes={};app.graph.links={};
+for(const [index,[type,key,title,ports,mediaType]] of definitions.entries()){
+ const id=index+1,isSort=type.endsWith('Sort'),isSplit=type.endsWith('Split'),field=isSort?'sort_settings':'settings';
+ const target=document.createElement('div');target.className='mock-node';target.id=key;
+ target.innerHTML='<div class="title">'+title+'</div><div class="ports">'+ports+'</div><div class="mount"></div><div class="mock-outputs"></div>';
+ document.getElementById(type==='EagleMediaImport'||type==='EagleAssetExport'?'input-column':'output-column').append(target);
+ const state=isSort?{version:1,mode:'input',order:[],descending:false}:type==='EagleAssetExport'?{version:1,host,token:'',folder_id:'',save_eagle:false,save_output:false,tags:'',annotation:''}:importState;
+ if(isSort)app.graph.links[id]={origin_id:1,origin_slot:['image','video','audio','model'].indexOf(mediaType)};
+ class Node{constructor(){this.id=id;this.type=type;this.size=[200,100];this.inputs=isSort?[{name:'assets',link:id}]:[];this.widgets=isSplit?[{name:'output_count',value:['video','audio'].includes(mediaType)?3:9}]:[{name:field,value:JSON.stringify(state)}];this.graph=app.graph;this.outputs=isSplit?Array.from({length:64},(_,i)=>({name:`${mediaType}_${i+1}`,type:mediaType==='audio'?'AUDIO':mediaType==='model'?'STRING':'IMAGE'})):type==='EagleMediaImport'?['images','videos','audios','models'].map(name=>({name})):[]}
+ addDOMWidget(name,type,element,options){target.querySelector('.mount').append(element);const widget={name,type,element,options};this.widgets.push(widget);return widget}
+ removeOutput(index){this.outputs.splice(index,1)}addOutput(name,type){this.outputs.push({name,type})}setSize(size){this.size=size}setDirtyCanvas(){}}
+ await app.extension.beforeRegisterNodeDef(Node,{name:type});const node=new Node();testNodes[id]=node;node.onNodeCreated();
+ globalThis[key.replace(/-([a-z])/g,(_,c)=>c.toUpperCase())+'Node']=node;
+ for(const output of node.outputs){const element=document.createElement('div');element.textContent=output.name+' ●';target.querySelector('.mock-outputs').append(element)}
+}
+</script></body></html>

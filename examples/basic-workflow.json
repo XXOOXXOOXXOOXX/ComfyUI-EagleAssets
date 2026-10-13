@@ -1,0 +1,238 @@
+{
+  "version": 0.4,
+  "last_node_id": 4,
+  "last_link_id": 3,
+  "groups": [],
+  "config": {},
+  "extra": {},
+  "nodes": [
+    {
+      "id": 1,
+      "type": "EagleAssetImport",
+      "pos": [
+        30,
+        80
+      ],
+      "size": [
+        550,
+        940
+      ],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "query",
+          "type": "STRING",
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "assets",
+          "type": "EAGLE_ASSETS",
+          "links": [
+            1
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "EagleAssetImport"
+      },
+      "widgets_values": [
+        "{\"version\": 1, \"host\": \"http://localhost:41595\", \"token\": \"\", \"folder_id\": \"\", \"limit\": 20, \"include_children\": false, \"manual_query\": \"\", \"query_text\": \"\", \"selection_mode\": \"manual\", \"selected_ids\": [], \"locked\": null, \"match_mode\": \"exact\", \"text_locked\": false, \"preview_loaded\": false}"
+      ]
+    },
+    {
+      "id": 2,
+      "type": "EagleAssetSort",
+      "pos": [
+        660,
+        80
+      ],
+      "size": [
+        550,
+        600
+      ],
+      "flags": {},
+      "order": 1,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "assets",
+          "type": "EAGLE_ASSETS",
+          "link": 1
+        }
+      ],
+      "outputs": [
+        {
+          "name": "assets",
+          "type": "EAGLE_ASSETS",
+          "links": [
+            2
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "EagleAssetSort"
+      },
+      "widgets_values": [
+        "{\"version\": 1, \"mode\": \"input\", \"order\": [], \"descending\": false}"
+      ]
+    },
+    {
+      "id": 3,
+      "type": "EagleAssetSplit",
+      "pos": [
+        1290,
+        80
+      ],
+      "size": [
+        270,
+        290
+      ],
+      "flags": {},
+      "order": 2,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "assets",
+          "type": "EAGLE_ASSETS",
+          "link": 2
+        }
+      ],
+      "outputs": [
+        {
+          "name": "image_1",
+          "type": "IMAGE",
+          "links": [
+            3
+          ],
+          "slot_index": 0
+        },
+        {
+          "name": "image_2",
+          "type": "IMAGE",
+          "links": [],
+          "slot_index": 1
+        },
+        {
+          "name": "image_3",
+          "type": "IMAGE",
+          "links": [],
+          "slot_index": 2
+        },
+        {
+          "name": "image_4",
+          "type": "IMAGE",
+          "links": [],
+          "slot_index": 3
+        },
+        {
+          "name": "image_5",
+          "type": "IMAGE",
+          "links": [],
+          "slot_index": 4
+        },
+        {
+          "name": "image_6",
+          "type": "IMAGE",
+          "links": [],
+          "slot_index": 5
+        },
+        {
+          "name": "image_7",
+          "type": "IMAGE",
+          "links": [],
+          "slot_index": 6
+        },
+        {
+          "name": "image_8",
+          "type": "IMAGE",
+          "links": [],
+          "slot_index": 7
+        },
+        {
+          "name": "image_9",
+          "type": "IMAGE",
+          "links": [],
+          "slot_index": 8
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "EagleAssetSplit"
+      },
+      "widgets_values": [
+        9
+      ]
+    },
+    {
+      "id": 4,
+      "type": "EagleAssetExport",
+      "pos": [
+        1640,
+        80
+      ],
+      "size": [
+        550,
+        660
+      ],
+      "flags": {},
+      "order": 3,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "link": 3
+        },
+        {
+          "name": "tags",
+          "type": "STRING",
+          "link": null
+        },
+        {
+          "name": "annotation",
+          "type": "STRING",
+          "link": null
+        }
+      ],
+      "outputs": [],
+      "properties": {
+        "Node name for S&R": "EagleAssetExport"
+      },
+      "widgets_values": [
+        "ComfyUI",
+        "{\"version\": 1, \"host\": \"http://localhost:41595\", \"token\": \"\", \"folder_id\": \"\", \"save_output\": false, \"save_eagle\": false, \"tags\": \"\", \"annotation\": \"\"}"
+      ]
+    }
+  ],
+  "links": [
+    [
+      1,
+      1,
+      0,
+      2,
+      0,
+      "EAGLE_ASSETS"
+    ],
+    [
+      2,
+      2,
+      0,
+      3,
+      0,
+      "EAGLE_ASSETS"
+    ],
+    [
+      3,
+      3,
+      0,
+      4,
+      0,
+      "IMAGE"
+    ]
+  ]
+}

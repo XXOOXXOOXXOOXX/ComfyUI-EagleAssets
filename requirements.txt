@@ -1,0 +1,2 @@
+# Packaging OBJ / glTF assets with external materials into self-contained GLB for Eagle.
+trimesh>=4.0

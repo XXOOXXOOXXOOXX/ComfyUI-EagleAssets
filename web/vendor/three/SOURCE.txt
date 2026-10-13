@@ -1,0 +1,4 @@
+Three.js 0.186.1 / https://github.com/mrdoob/three.js / MIT
+Source: https://registry.npmjs.org/three/-/three-0.186.1.tgz
+SHA512: blFeqb49wRCSGUGj7gtpfnSGHy2lwDk94RhUmS1c/hTby70kvChbWpkJ4Pm1390LqzzvTmzgXKHPEafJwCb8jA==
+Copied modules only. Import paths rewritten to local .mjs modules.

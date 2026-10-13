@@ -1,0 +1,31 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><title>Eagle 工作流切换 fixture</title><style>
+body{background:#141a23;font-family:system-ui,sans-serif;color:#d9e4f5;margin:24px}.layout{display:grid;grid-template-columns:570px 570px;gap:24px}.mock-node{background:#29313f;border:1px solid #52667e;border-radius:12px;padding:10px;height:fit-content;margin-bottom:20px}.title{font-size:17px;padding:4px 8px 12px}</style></head>
+<body><div class="layout"></div><script type="module">
+import { app } from '/scripts/app.js';await import('/web/eagle_assets.js');
+const constructors={};const defaults={version:1,host:location.origin,token:'',folder_id:'',limit:20,include_children:false,selection_mode:'manual',selected_ids:[],manual_query:'',locked:null,match_mode:'exact',preview_loaded:false};
+for(const type of ['EagleAssetImport','EagleMediaImport','EagleAssetSort','EagleVideoSort','EagleAudioSort','EagleModelSort']){
+ class Node{constructor(){this.id=null;this.type=type;this.size=[200,100];this.properties={};this.inputs=[];this.outputs=[];this.graph=app.graph;this.widgets=[{name:type.endsWith('Sort')?'sort_settings':'settings',value:JSON.stringify(type.endsWith('Sort')?{version:1,mode:'input',order:[],descending:false}:type==='EagleMediaImport'?{...defaults,folder_count:1,folder_ids:[''],types:[],video_fps:24,video_max_seconds:2}:defaults)}]}
+ addDOMWidget(name,type,element,options){this.target.querySelector('.mount').append(element);const widget={name,type,element,options};this.widgets.push(widget);return widget}setSize(size){this.size=size}setDirtyCanvas(){}
+ serialize(){const record={id:this.id,type:this.type,properties:JSON.parse(JSON.stringify(this.properties)),inputs:JSON.parse(JSON.stringify(this.inputs)),widgets:this.widgets.filter(widget=>widget.options?.serialize!==false).map(widget=>({name:widget.name,value:widget.serializeValue?widget.serializeValue():widget.value}))};this.onSerialize?.(record);return record}
+ }
+ await app.extension.beforeRegisterNodeDef(Node,{name:type});constructors[type]=Node;
+}
+globalThis.testNodes={};app.graph.links={};globalThis.retiredEditors=[];
+globalThis.blankWorkflow=(type='EagleAssetImport',name='blank')=>({name,links:{},nodes:[{id:1,type,properties:{},widgets:[]},...(['EagleAssetSort',...(type==='EagleMediaImport'?['EagleVideoSort','EagleAudioSort','EagleModelSort']:[])].map((type,index)=>({id:index+2,type,properties:{},widgets:[],inputs:[{name:'assets',link:index+2}]})))]});
+globalThis.serializeWorkflow=()=>JSON.parse(JSON.stringify({name:globalThis.activeWorkflowName,links:app.graph.links,nodes:Object.values(testNodes).map(node=>node.serialize())}));
+globalThis.mountWorkflow=async serialized=>{
+ for(const node of Object.values(testNodes)){retiredEditors.push(node.eagleAssetsEditor);node.onRemoved?.()}
+ globalThis.testNodes={};app.graph.links={...serialized.links};globalThis.activeWorkflowName=serialized.name;document.querySelector('.layout').replaceChildren();
+ for(const record of serialized.nodes){
+  const node=new constructors[record.type]();node.id=record.id;
+  const target=document.createElement('div');target.className='mock-node';target.id=record.type.endsWith('Import')?'switch-import':'sort-'+({EagleAssetSort:'image',EagleVideoSort:'video',EagleAudioSort:'audio',EagleModelSort:'model'}[record.type]);target.innerHTML='<div class="title"></div><div class="mount"></div>';target.querySelector('.title').textContent=serialized.name+' · '+record.type;document.querySelector('.layout').append(target);node.target=target;testNodes[node.id]=node;
+  node.inputs=record.inputs || [];if(record.type.endsWith('Sort')){const slot={EagleAssetSort:0,EagleVideoSort:1,EagleAudioSort:2,EagleModelSort:3}[record.type];if(!node.inputs.length)node.inputs=[{name:'assets',link:node.id}];app.graph.links[node.inputs[0].link] ||= {origin_id:1,origin_slot:slot};}
+  node.onNodeCreated();
+  Object.assign(node.properties,JSON.parse(JSON.stringify(record.properties||{})));
+  for(const saved of record.widgets){const widget=node.widgets.find(widget=>widget.name===saved.name);if(widget)widget.value=saved.value}
+  node.onConfigure?.(record);
+ }
+ globalThis.importNode=testNodes[1];globalThis.sortNode=testNodes[2];
+};
+await mountWorkflow(blankWorkflow());
+</script></body></html>

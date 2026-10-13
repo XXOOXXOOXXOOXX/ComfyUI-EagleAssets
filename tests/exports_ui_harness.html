@@ -1,0 +1,13 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><title>Eagle 多媒体导出 UI fixture</title><style>
+body{background:#141a23;font-family:system-ui,sans-serif;color:#d9e4f5;margin:24px}.layout{display:grid;grid-template-columns:repeat(3,550px);gap:20px}.mock-node{background:#29313f;border:1px solid #52667e;border-radius:12px;padding:10px;height:fit-content}.title{font-size:17px;padding:4px 8px 12px}.ports{color:#9db3cd;font-size:12px;padding:0 8px 8px}</style></head>
+<body><div class="layout"></div><script type="module">
+import { app } from '/scripts/app.js';await import('/web/eagle_assets.js');
+const definitions=[['EagleAudioExport','audio','Eagle 音频导出 / 保存 / 预览','audio AUDIO / tags / annotation'],['EagleVideoExport','video','Eagle 视频导出 / 保存 / 预览','video VIDEO / frames IMAGE / path STRING / audio AUDIO / tags / annotation'],['EagleModelExport','model','Eagle 模型导出 / 保存 / 预览','model_3d FILE_3D / path STRING / mesh MESH / tags / annotation']];
+globalThis.testNodes={};
+for(const [index,[type,key,title,ports]] of definitions.entries()){
+ const id=index+1,target=document.createElement('div');target.id=key;target.className='mock-node';target.innerHTML='<div class="title">'+title+'</div><div class="ports">'+ports+'</div><div class="mount"></div>';document.querySelector('.layout').append(target);
+ class Node{constructor(){this.id=id;this.type=type;this.size=[200,100];this.graph=app.graph;this.inputs=[];this.outputs=[];this.widgets=[{name:'filename_prefix',value:'EagleMediaFixture'},{name:'settings',value:JSON.stringify({version:1,host:location.origin,token:'',folder_id:'',save_eagle:false,save_output:false,tags:'',annotation:''})}]}
+ addDOMWidget(name,type,element,options){target.querySelector('.mount').append(element);const widget={name,type,element,options};this.widgets.push(widget);return widget}setSize(size){this.size=size}setDirtyCanvas(){}}
+ await app.extension.beforeRegisterNodeDef(Node,{name:type});const node=new Node();testNodes[id]=node;globalThis[key+'Node']=node;node.onNodeCreated();
+}
+</script></body></html>

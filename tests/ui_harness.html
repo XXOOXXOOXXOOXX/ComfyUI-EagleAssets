@@ -1,0 +1,18 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><title>Eagle Assets UI fixture</title><style>
+body{background:#141a23;font-family:system-ui,sans-serif;color:#d9e4f5;margin:24px}.layout{display:grid;grid-template-columns:550px 550px;gap:24px}.mock-node{background:#29313f;border:1px solid #52667e;border-radius:12px;padding:10px;height:fit-content}.title{font-size:17px;padding:4px 8px 12px}.ports{color:#9db3cd;font-size:12px;padding:0 8px 8px}.caption{font-size:12px;color:#91a8c4;padding:10px}.mock-outputs{font-size:12px;color:#bbd5e9;display:grid;grid-template-columns:repeat(3,1fr);gap:10px;padding:10px}</style></head>
+<body><div class="layout"><div class="mock-node" id="import"><div class="title">Eagle 图片导入 · Assets</div><div class="ports">● query（外部名称列表） → assets ●</div><div class="mount"></div></div><div><div class="mock-node" id="sort"><div class="title">Eagle 图片排序 · Assets</div><div class="ports">● assets → assets ●</div><div class="mount"></div></div><div class="mock-node" id="split" style="margin-top:20px"><div class="title">Eagle 图片拆分 · Assets</div><div class="ports">● assets　输出数量：9</div><div class="mock-outputs"></div></div><div class="mock-node" id="export" style="margin-top:20px"><div class="title">Eagle 图片导出 / 保存 / 预览</div><div class="ports">● images　文件名前缀：ComfyUI</div><div class="mount"></div></div></div></div>
+<script type="module">
+import { app } from '/scripts/app.js';await import('/web/eagle_assets.js');
+const host=location.origin;
+const defs={EagleAssetImport:{version:1,host,token:'',folder_id:'',limit:20,include_children:false,selection_mode:'manual',selected_ids:[],manual_query:'',locked:null,match_mode:'exact'},EagleAssetSort:{version:1,mode:'input',order:[],descending:false},EagleAssetExport:{version:1,host,token:'',folder_id:'',save_eagle:false,save_output:false}};
+globalThis.testNodes={};
+for(const [index,type] of ['EagleAssetImport','EagleAssetSort','EagleAssetSplit','EagleAssetExport'].entries()){
+ const id=index+1,target=document.getElementById(['import','sort','split','export'][index]);
+ class Node{constructor(){this.id=id;this.type=type;this.size=[200,100];this.inputs=type==='EagleAssetSort'?[{name:'assets',link:1}]:[];this.widgets=type==='EagleAssetSplit'?[{name:'output_count',value:9}]:[{name:type==='EagleAssetSort'?'sort_settings':'settings',value:JSON.stringify(defs[type])}];this.graph=app.graph;this.outputs=type==='EagleAssetSplit'?Array.from({length:64},(_,i)=>({name:`image_${i+1}`,type:'IMAGE'})):[]}
+ addDOMWidget(name,type,element,options){target.querySelector('.mount').append(element);const widget={name,type,element,options};this.widgets.push(widget);return widget}
+ removeOutput(index){this.outputs.splice(index,1)}addOutput(name,type){this.outputs.push({name,type})}setSize(size){this.size=size}setDirtyCanvas(){}}
+ await app.extension.beforeRegisterNodeDef(Node,{name:type});const node=new Node();testNodes[id]=node;node.onNodeCreated();
+}
+globalThis.importNode=testNodes[1];globalThis.sortNode=testNodes[2];globalThis.splitNode=testNodes[3];globalThis.exportNode=testNodes[4];
+for(const output of splitNode.outputs){const element=document.createElement('div');element.textContent=output.name+' ●';document.querySelector('.mock-outputs').append(element)}
+</script></body></html>
