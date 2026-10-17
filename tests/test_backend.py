@@ -102,7 +102,8 @@ class BackendTests(unittest.TestCase):
             before_exports = len(self.fixture.exports); before_output = len(list((root / "output").iterdir()))
             data = self.fixture.settings(folder_id="results", save_eagle=eagle, save_output=output)
             result = node.save(image, settings=json.dumps(data), prompt={"inputs": {"settings": json.dumps({"token": "must-not-leak"})}})
-            descriptors = result["ui"]["images"]
+            self.assertNotIn("images", result["ui"], "native and custom image previews must not both render")
+            descriptors = result["ui"]["eagle_media"][0]
             self.assertEqual(len(descriptors), 1)
             self.assertEqual(descriptors[0]["type"], "output" if output else "temp")
             self.assertEqual(len(self.fixture.exports) - before_exports, int(eagle))
@@ -112,7 +113,7 @@ class BackendTests(unittest.TestCase):
                 with Image.open(self.fixture.exports[-1]["items"][0]["path"]) as saved:
                     self.assertNotIn("must-not-leak", saved.info.get("prompt", ""))
         empty = node.save(None, settings=json.dumps(self.fixture.settings(save_eagle=True, save_output=True)))
-        self.assertEqual(empty["ui"]["images"], [])
+        self.assertEqual(empty["ui"]["eagle_media"], [[]])
 
     def test_07_stale_preview_cannot_be_locked_in_other_folder(self):
         data = self.fixture.settings(); catalog = self.runtime.prepare_catalog(data)

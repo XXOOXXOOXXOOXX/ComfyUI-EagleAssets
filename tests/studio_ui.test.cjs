@@ -1,0 +1,84 @@
+const { chromium }=require('playwright');
+const { spawn }=require('node:child_process');
+const path=require('node:path'),fs=require('node:fs'),assert=require('node:assert/strict');
+const server=spawn(process.env.VC_PYTHON||'python',[path.join(__dirname,'studio_fixture.py')],{stdio:['pipe','pipe','pipe'],windowsHide:true});
+let diagnostics='';server.stderr.on('data',chunk=>diagnostics+=chunk.toString());
+const ready=new Promise((resolve,reject)=>{let output='';const timer=setTimeout(()=>reject(new Error('Studio fixture timeout '+diagnostics)),45000);server.stdout.on('data',chunk=>{output+=chunk;try{const info=JSON.parse(output.split('\n')[0]);clearTimeout(timer);resolve(info)}catch{}});server.on('exit',code=>{clearTimeout(timer);reject(new Error('Studio fixture exited '+code+' '+diagnostics))})});
+(async()=>{
+ let browser;
+ try{
+  const {host}=await ready;
+  browser=await chromium.launch({headless:true,...(process.env.VC_BROWSER_PATH?{executablePath:process.env.VC_BROWSER_PATH}:{})});
+  const page=await browser.newPage({viewport:{width:1880,height:1160}});const errors=[];page.on('pageerror',error=>errors.push(error.message));
+  await page.goto(host+'/tests/studio_ui_harness.html');await page.waitForFunction(()=>globalThis.studioHarnessReady && globalThis.OllamaStudioUI?.conversation?.id);await page.evaluate(()=>OllamaStudioUI.ready);
+  const panel=page.locator('.os-panel'),header=page.locator('.os-header'),importer=page.locator('#import'),bridge=page.locator('#bridge');
+  const stats=async()=>await (await fetch(host+'/tests/studio-stats')).json();
+  const shots=path.join(__dirname,'studio-screenshots');fs.mkdirSync(shots,{recursive:true});
+  assert.equal(await panel.getAttribute('data-view'),'floating');assert.ok(await panel.isVisible());
+  assert.equal((await stats()).counts['item/list']||0,0,'default panel does not scan Eagle folders');
+  const originalCanvas=await page.locator('.graph-area').evaluate(element=>({width:element.style.width,margin:element.style.marginRight}));
+  const before=await panel.boundingBox(),box=await header.boundingBox();await page.mouse.move(box.x+28,box.y+22);await page.mouse.down();await page.mouse.move(box.x-92,box.y+75,{steps:8});await page.mouse.up();
+  const dragged=await panel.boundingBox();assert.ok(Math.abs(dragged.x-before.x)>20||Math.abs(dragged.y-before.y)>20,'header drag changes floating panel position');
+  await panel.locator('[data-action=dock]').click();assert.equal(await panel.getAttribute('data-view'),'docked');assert.match(await page.locator('.graph-area').evaluate(element=>element.style.width),/calc/);
+  await panel.locator('[data-action=dock]').click();assert.equal(await panel.getAttribute('data-view'),'floating');assert.deepEqual(await page.locator('.graph-area').evaluate(element=>({width:element.style.width,margin:element.style.marginRight})),originalCanvas);
+  await panel.locator('[data-action=minimize]').click();const orb=page.locator('.os-orb');assert.ok(await orb.isVisible());const orbBox=await orb.boundingBox();assert.ok(Math.abs(orbBox.x+orbBox.width/2-940)<4,'orb is centered along the bottom');await orb.click();assert.ok(await panel.isVisible());
+  await panel.locator('[data-action=minimize]').click();
+  await page.waitForFunction(()=>!importNode.eagleAssetsEditor.busy);
+  await importer.getByLabel('Eagle 目录数量',{exact:true}).fill('2');await importer.getByLabel('Eagle 目录 1',{exact:true}).selectOption('media_mix');await importer.getByLabel('Eagle 目录 2',{exact:true}).selectOption('media_extra');await importer.locator('[data-action=type-all]').click();
+  await page.waitForFunction(()=>importNode.eagleAssetsEditor.items.length===7&&!importNode.eagleAssetsEditor.busy&&bridgeNode.eagleAssetsEditor.items.length===7);
+  assert.equal(await page.evaluate(()=>importNode.outputs.length),5,'old four-socket node receives the new catalog socket');
+  await importer.getByLabel('资产检索文字',{exact:true}).fill('picture/clip/clip2/sound/sound2/model/model2');await importer.getByRole('button',{name:'检索并标记',exact:true}).click();
+  await page.waitForFunction(()=>testNodes[3].eagleAssetsEditor.items.length===1&&testNodes[4].eagleAssetsEditor.items.length===2&&testNodes[5].eagleAssetsEditor.items.length===2&&testNodes[6].eagleAssetsEditor.items.length===2);
+  for(const [key,id,count] of [['image',3,1],['video',4,2],['audio',5,2],['model',6,2]]){
+   const sorter=page.locator('#sort-'+key);assert.equal(await page.evaluate(id=>testNodes[id].eagleAssetsEditor.outputItems().length,id),0);
+   const selected=await sorter.locator('.ea-card').first().getAttribute('data-id');await sorter.locator('[data-id='+selected+'] .ea-name').click();assert.equal(await page.evaluate(id=>testNodes[id].eagleAssetsEditor.outputItems().length,id),1);
+   await sorter.locator('[data-id='+selected+'] .ea-name').click();assert.equal(await page.evaluate(id=>testNodes[id].eagleAssetsEditor.outputItems().length,id),0);assert.equal(await sorter.locator('.ea-card').count(),count);
+   await sorter.getByRole('button',{name:'全选',exact:true}).click();assert.equal(await page.evaluate(id=>testNodes[id].eagleAssetsEditor.outputItems().length,id),count);
+   await sorter.getByRole('button',{name:'取消全选',exact:true}).click();assert.equal(await page.evaluate(id=>testNodes[id].eagleAssetsEditor.outputItems().length,id),0);
+   await sorter.locator('[data-action=filter]').click();assert.equal(await page.evaluate(id=>testNodes[id].eagleAssetsEditor.outputItems().length,id),count);
+  }
+  await bridge.locator('[data-id=media_video2] .ea-name').click();await bridge.locator('[data-id=media_image] .ea-name').click();assert.deepEqual(await page.evaluate(()=>EagleAssetsStudioBridge.getSelection().map(item=>item.item_id)),['media_video2','media_image']);
+  await bridge.locator('[data-id=media_video2] .ea-name').click();await bridge.locator('[data-id=media_video2] .ea-name').click();assert.deepEqual(await page.evaluate(()=>EagleAssetsStudioBridge.getSelection().map(item=>item.item_id)),['media_image','media_video2']);
+  await page.evaluate(()=>OllamaStudioUI.open());assert.equal(await panel.locator('.os-attachment[data-source=Eagle]').count(),0,'Eagle references start disabled');await panel.locator('[data-action=eagle]').click();await page.waitForFunction(()=>OllamaStudioUI.eagleRefs.length===2);
+  const config=await (await fetch(host+'/tests/studio-config')).json();const files=['image','video','audio'].map(kind=>({name:path.basename(config.files[kind]),type:{image:'image/png',video:'video/mp4',audio:'audio/wav'}[kind],base64:fs.readFileSync(config.files[kind]).toString('base64')}));
+  await header.evaluate((element,files)=>{const transfer=new DataTransfer();for(const file of files){const bytes=Uint8Array.from(atob(file.base64),char=>char.charCodeAt(0));transfer.items.add(new File([bytes],file.name,{type:file.type}))}element.dispatchEvent(new DragEvent('dragenter',{bubbles:true,cancelable:true,dataTransfer:transfer}));element.dispatchEvent(new DragEvent('drop',{bubbles:true,cancelable:true,dataTransfer:transfer}))},files);
+  await page.waitForFunction(()=>OllamaStudioUI.uploads.length===3&&OllamaStudioUI.uploads.every(item=>item.id&&!item.pending&&!item.error));
+  assert.deepEqual(await panel.locator('.os-attachment').evaluateAll(cards=>cards.map(card=>card.dataset.source)),['上传','上传','上传','Eagle','Eagle']);
+  assert.deepEqual(await page.evaluate(()=>OllamaStudioUI.uploads.map(item=>item.name)),['picture.png','clip.mp4','sound.wav']);
+  await panel.getByRole('button',{name:'选择模型',exact:true}).click();await page.getByText('音频转录设置',{exact:true}).click();await page.getByLabel('手动音频转录',{exact:true}).fill('这是测试参考音频的人工转录。');await page.getByRole('button',{name:'使用模型 mock-vision:latest',exact:true}).click();
+  await panel.locator('[data-action=skills]').click();await page.getByLabel('搜索 Skill',{exact:true}).fill('no-skill-matches');assert.equal(await page.locator('.os-modal .os-list-item').count(),0);await page.getByRole('button',{name:'创建 Skill',exact:true}).click();
+  await page.getByLabel('Skill 名称',{exact:true}).fill('Fixture 创作 Skill');await page.getByLabel('Skill 简介',{exact:true}).fill('用于验证真实系统指令与持久化');await page.getByLabel('Skill 系统指令',{exact:true}).fill('FOLLOW_TEST_SKILL_RULE_42: preserve visual continuity.');await page.getByRole('button',{name:'保存 Skill',exact:true}).click();
+  await page.getByRole('button',{name:'收藏 Fixture 创作 Skill',exact:true}).click();await page.getByRole('button',{name:'收藏',exact:true}).click();await page.getByLabel('搜索 Skill',{exact:true}).fill('Fixture');assert.equal(await page.locator('.os-modal .os-list-item').count(),1);await page.locator('.os-modal').screenshot({path:path.join(shots,'skills.png')});
+  await page.getByRole('button',{name:'详情 Fixture 创作 Skill',exact:true}).click();await page.getByRole('button',{name:'添加这个 Skill',exact:true}).click();assert.ok(await page.evaluate(()=>!!OllamaStudioUI.prefs.selected_skill));await page.locator('.os-modal-cover').click({position:{x:2,y:2}});
+  const mode=async branch=>{
+   await panel.locator('[data-action=mode]').click();
+   const groups=page.locator('.os-modal [data-mode-group]');assert.equal(await groups.count(),3);
+   assert.deepEqual(await groups.evaluateAll(elements=>elements.map(element=>element.dataset.modeGroup)),['chat','script','director']);
+   for(const [key,title] of [['chat','对话创作'],['script','剧本创编'],['director','导演执导']])assert.ok((await page.locator('.os-modal [data-mode-group='+key+']').textContent()).includes(title));
+   await page.getByRole('button',{name:branch==='original'?'剧本原创':'故事改编',exact:true}).click();
+  };
+  await mode('original');await page.getByRole('button',{name:'都市现实',exact:true}).click();await page.getByRole('button',{name:'科幻未来',exact:true}).click();await page.getByRole('button',{name:'悬疑推理',exact:true}).click();assert.equal(await page.locator('.os-genres [data-selected=true]').count(),2);
+  for(const [label,text] of [['目标受众','普通观众'],['角色设定','医生与老人'],['时代背景','近未来'],['核心看点','记忆与身份'],['画风','低饱和自然光'],['剧本结构','三幕式短片']])await page.getByLabel(label,{exact:true}).fill(text);
+  await page.locator('.os-modal').screenshot({path:path.join(shots,'script-settings.png')});await page.getByRole('button',{name:'确认',exact:true}).click();
+  const send=async text=>{const before=(await stats()).ollama_calls.length;await panel.getByLabel('输入消息',{exact:true}).fill(text);await panel.locator('[data-action=send]').click();await page.waitForFunction(()=>!OllamaStudioUI.busy,{},{timeout:20000});const after=await stats();assert.equal(after.ollama_calls.length,before+1,await page.locator('.os-status').textContent());assert.match(await page.locator('.os-status').textContent(),/回复完成/);return after.ollama_calls.at(-1)};
+  const original=await send('Fixture原创剧本：根据素材写两段故事。');assert.ok(original.messages[0].content.includes('FOLLOW_TEST_SKILL_RULE_42'));assert.ok(original.messages[0].content.includes('近未来'));assert.ok(original.messages.at(-1).images.length>=2,'real images and sampled video frames enter the vision model');assert.ok(original.messages.at(-1).content.includes('这是测试参考音频的人工转录。'));
+  assert.equal(await panel.getByRole('button',{name:'复制回复',exact:true}).count(),1);await page.waitForFunction(()=>!document.querySelector('.os-toast'));await panel.screenshot({path:path.join(shots,'floating.png')});
+  await mode('adapt');await page.getByLabel('改编说明',{exact:true}).fill('改编窗边告别，保留人物关系。');await page.getByRole('button',{name:'确认',exact:true}).click();const adapt=await send('Fixture改编：调整这场告别。');assert.ok(adapt.messages[0].content.includes('改编窗边告别'));
+  await panel.locator('[data-action=mode]').click();await page.getByRole('button',{name:'专业导演执导',exact:true}).click();await page.getByLabel('镜头与执导风格',{exact:true}).fill('低机位长镜头');await page.getByLabel('导演关注重点',{exact:true}).fill('动作调度与连续性');await page.getByLabel('视听风格',{exact:true}).fill('自然光与安静背景');await page.getByRole('button',{name:'确认',exact:true}).click();const director=await send('Fixture导演：列出镜头顺序。');assert.ok(director.messages[0].content.includes('低机位长镜头'));
+  const conversationId=await page.evaluate(()=>OllamaStudioUI.conversation.id);
+  await panel.getByRole('button',{name:'选择模型',exact:true}).click();await page.getByRole('button',{name:'使用模型 mock-text:latest',exact:true}).click();
+  await panel.getByLabel('输入消息',{exact:true}).fill('Fixture纯文字模型不能读取已有视觉历史');await panel.locator('[data-action=send]').click();await page.waitForFunction(()=>!OllamaStudioUI.busy);assert.match(await page.locator('.os-status').textContent(),/vision|视觉/);
+  await panel.locator('[data-action=eagle]').click();await panel.locator('[data-action=new]').click();await page.waitForFunction(id=>OllamaStudioUI.conversation.id!==id,conversationId);const text=await send('Fixture切换模型：概括一个纯文字剧本。');assert.equal(text.model,'mock-text:latest');
+  await panel.locator('[data-action=history]').click();await page.getByRole('button',{name:/^打开对话 Fixture原创剧本/}).click();await page.waitForFunction(id=>OllamaStudioUI.conversation.id===id,conversationId);assert.equal(await page.evaluate(()=>OllamaStudioUI.conversation.id),conversationId);
+  await panel.locator('[data-action=eagle]').click();
+  const savedWorkflow=await page.evaluate(()=>serializeStudioWorkflow());await page.evaluate(async saved=>{await mountStudioWorkflow(saved)},savedWorkflow);await page.waitForFunction(()=>importNode.eagleAssetsEditor.items.length===7&&!importNode.eagleAssetsEditor.busy&&bridgeNode.eagleAssetsEditor.items.length===7);
+  assert.deepEqual(await page.evaluate(()=>EagleAssetsStudioBridge.getSelection().map(item=>item.item_id)),['media_image','media_video2']);
+  await panel.locator('[data-action=dock]').click();await panel.screenshot({path:path.join(shots,'docked.png')});await page.reload();await page.waitForFunction(()=>globalThis.studioHarnessReady&&OllamaStudioUI.conversation?.messages?.length>=6);assert.equal(await page.evaluate(()=>OllamaStudioUI.conversation.id),conversationId);assert.equal(await panel.getAttribute('data-view'),'docked');
+  await page.evaluate(async saved=>{await mountStudioWorkflow(saved)},savedWorkflow);await page.waitForFunction(()=>!importNode.eagleAssetsEditor.busy&&importNode.eagleAssetsEditor.items.length===7&&EagleAssetsStudioBridge.getSelection().length===2);
+  await panel.locator('[data-action=eagle]').click();await panel.getByLabel('输入消息',{exact:true}).fill('[slow]Fixture测试停止');await panel.locator('[data-action=send]').click();await page.waitForFunction(()=>OllamaStudioUI.busy&&document.querySelector('.os-live .os-text')?.textContent.includes('逐字输出'));await panel.locator('[data-action=stop]').click();await page.waitForFunction(()=>!OllamaStudioUI.busy&&document.querySelector('.os-status')?.textContent.includes('已停止'));assert.match(await page.locator('.os-status').textContent(),/已停止/);
+  let persisted;for(let attempt=0;attempt<30;attempt++){persisted=await (await fetch(host+'/ollama_studio/conversations/'+conversationId)).json();if(persisted.conversation?.messages?.at(-1)?.content?.includes('逐字输出'))break;await page.waitForTimeout(100)}
+  assert.ok(persisted.conversation.messages.at(-1).content.includes('逐字输出'));assert.ok(persisted.conversation.messages.at(-1).content.length<1000,'stopping preserves a partial reply rather than finishing all tokens');assert.equal(errors.length,0,errors.join('\n'));
+  console.log('STUDIO UI PASS: default floating/drag/dock/orb, full-panel real media drop and ordering, Eagle bridge click order, all four sort filters, skills search/create/favorite/system prompt, original/adapt/director constraints, model switching, true streaming stop/partial persistence, history/new/reload, and workflow preview restore. Local mock Ollama only.');
+  await page.evaluate(()=>{OllamaStudioUI.destroy();Object.values(testNodes).forEach(node=>node.onRemoved?.())});
+ }finally{if(browser)await browser.close();server.stdin.end('\n');if(server.exitCode===null)await new Promise(resolve=>server.once('exit',resolve));}
+})().catch(error=>{console.error(error,diagnostics);process.exitCode=1});

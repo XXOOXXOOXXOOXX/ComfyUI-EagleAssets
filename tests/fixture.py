@@ -13,6 +13,7 @@ import shutil
 import subprocess
 import sys
 import threading
+import time
 import types
 from urllib.parse import parse_qs, urlsplit
 import uuid
@@ -48,7 +49,7 @@ class NativePreviewFixture(NativeSaveFixture):
     kind = "temp"
 
 
-def load_plugin(root):
+def load_plugin(root, native_web=False):
     paths = types.ModuleType("folder_paths")
     directories = {}
     for name in ("temp", "output", "user", "input"):
@@ -86,26 +87,33 @@ def load_plugin(root):
             def decorator(function): handlers[url] = function; return function
             return decorator
     server = types.ModuleType("server")
-    server.PromptServer = types.SimpleNamespace(instance=types.SimpleNamespace(routes=Routes()))
+    if native_web:
+        from aiohttp import web
+        registered_routes = web.RouteTableDef()
+    else:
+        registered_routes = Routes()
+    server.PromptServer = types.SimpleNamespace(instance=types.SimpleNamespace(routes=registered_routes))
     sys.modules["server"] = server
-    aiohttp = types.ModuleType("aiohttp")
-    aiohttp.web = types.SimpleNamespace(json_response=lambda value, status=200: (status, value),
-        FileResponse=lambda path, **kwargs: (200, Path(path), kwargs.get("headers", {})))
-    sys.modules["aiohttp"] = aiohttp
+    if not native_web:
+        aiohttp = types.ModuleType("aiohttp")
+        aiohttp.web = types.SimpleNamespace(json_response=lambda value, status=200: (status, value),
+            FileResponse=lambda path, **kwargs: (200, Path(path), kwargs.get("headers", {})))
+        sys.modules["aiohttp"] = aiohttp
     name = "eagle_assets_fixture"
     for module_name in list(sys.modules):
         if module_name == name or module_name.startswith(name + "."):
             del sys.modules[module_name]
     spec = importlib.util.spec_from_file_location(name, PLUGIN / "__init__.py", submodule_search_locations=[str(PLUGIN)])
     module = importlib.util.module_from_spec(spec); sys.modules[name] = module; spec.loader.exec_module(module)
-    return module, handlers
+    return module, registered_routes if native_web else handlers
 
 
 class Fixture:
-    def __init__(self, root, media=False):
+    def __init__(self, root, media=False, native_web=False):
         self.root = Path(root).resolve(); self.root.mkdir(parents=True, exist_ok=True)
-        self.plugin, self.handlers = load_plugin(root)
-        self.counts = Counter(); self.exports = []
+        self.plugin, self.handlers = load_plugin(root, native_web)
+        self.native_web = native_web
+        self.counts = Counter(); self.exports = []; self.ollama_calls = []
         self.library = self.root / "test.library"; self.library.mkdir(exist_ok=True)
         self.folders = [{"id": "assets", "name": "Assets", "children": [{"id": "actors", "name": "Actors", "children": []}]}, {"id": "results", "name": "Results", "children": []}]
         self.items = []
@@ -199,6 +207,11 @@ class Fixture:
                 data = json.dumps(value, ensure_ascii=False).encode("utf-8"); self.send_response(status); self.send_header("Content-Type", "application/json"); self.send_header("Content-Length", str(len(data))); self.end_headers(); self.wfile.write(data)
             def do_GET(self):
                 parsed = urlsplit(self.path); query = parse_qs(parsed.query); path = parsed.path
+                if path == "/api/tags":
+                    fixture.counts["ollama/tags"] += 1
+                    return self.send_json({"models": [{"name": "mock-vision:latest", "size": 123456789, "details": {"family": "qwen35", "parameter_size": "9B"}},
+                                                       {"name": "mock-text:latest", "size": 34567890, "details": {"family": "llama", "parameter_size": "3B"}},
+                                                       {"name": "mock-vision:cloud", "size": 0, "details": {"family": "qwen35"}, "remote_model": "mock-vision:cloud", "remote_host": "https://ollama.com"}]})
                 if path.startswith("/api/"):
                     endpoint = path[5:]; fixture.counts[endpoint] += 1
                     if endpoint == "library/info": data = {"library": {"path": str(fixture.library), "name": "Fixture"}}
@@ -212,12 +225,15 @@ class Fixture:
                         item = next((item for item in fixture.items if item["id"] == query.get("id", [None])[0]), None)
                         if not item: return self.send_json({"status": "error"}, 404)
                         data = str(fixture.library / "images" / (item["id"] + ".info") / (item["name"] + "." + item["ext"]))
+                    elif endpoint == "item/info":
+                        data = next((dict(item) for item in fixture.items if item["id"] == query.get("id", [None])[0]), None)
+                        if data is None: return self.send_json({"status": "error"}, 404)
                     else: return self.send_json({"status": "error"}, 404)
                     return self.send_json({"status": "success", "data": data})
                 if path == "/tests/stats": return self.send_json({"counts": dict(fixture.counts), "exports": len(fixture.exports),
                                                                  "output_files": len(list((fixture.root / "output").rglob("*.*"))),
                                                                  "temp_files": len(list((fixture.root / "temp").rglob("*.*")))})
-                for route, handler in fixture.handlers.items():
+                for route, handler in ([] if fixture.native_web else fixture.handlers.items()):
                     if "{" not in route: continue
                     pattern = re.sub(r"\{(\w+)(?::([^}]+))?\}", lambda matched: "(?P<" + matched[1] + ">" + (matched[2] or "[^/]+") + ")", route)
                     match = re.fullmatch(pattern, path)
@@ -248,6 +264,36 @@ class Fixture:
                 self.send_response(200); self.send_header("Content-Type", mime); self.send_header("Cache-Control", "no-store"); self.send_header("Content-Length", str(len(content))); self.end_headers(); self.wfile.write(content)
             def do_POST(self):
                 path = urlsplit(self.path).path; body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
+                if path == "/api/show":
+                    fixture.counts["ollama/show"] += 1
+                    vision = "vision" in str(body.get("model", ""))
+                    return self.send_json({"capabilities": ["completion", *( ["vision"] if vision else [])],
+                                           "details": {"family": "qwen35" if vision else "llama"}, "model_info": {"general.architecture": "qwen35" if vision else "llama"}})
+                if path == "/api/chat":
+                    fixture.counts["ollama/chat"] += 1; fixture.ollama_calls.append(body)
+                    self.send_response(200); self.send_header("Content-Type", "application/x-ndjson"); self.end_headers()
+                    text = "".join(str(message.get("content", "")) for message in body.get("messages", []))
+                    chunks = ["第一段：", "镜头从窗外进入，", "角色停下脚步。", "\n第二段：", "音乐渐弱，", "画面切到远景。"]
+                    if "[repeat]" in text: chunks = ["有效内容：镜头从窗外进入。\n"] + ["in the image, "] * 100
+                    if "[slow]" in text: chunks = ["逐字输出" + str(index) + " " for index in range(100)]
+                    try:
+                        for index, chunk in enumerate(chunks):
+                            event = {"model": body.get("model"), "message": {"role": "assistant", "content": chunk, **({"thinking": "整理参考素材"} if index == 0 else {})}, "done": False}
+                            self.wfile.write((json.dumps(event, ensure_ascii=False) + "\n").encode()); self.wfile.flush(); time.sleep(0.06 if "[slow]" in text else 0.02)
+                        self.wfile.write((json.dumps({"model": body.get("model"), "message": {"role": "assistant", "content": ""}, "done": True,
+                                                     "total_duration": 1000000000, "prompt_eval_count": 20, "eval_count": len(chunks)}, ensure_ascii=False) + "\n").encode()); self.wfile.flush()
+                    except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError, OSError):
+                        pass
+                    return
+                if path == "/api/item/update":
+                    item = next((item for item in fixture.items if item["id"] == body.get("id")), None)
+                    if item is None: return self.send_json({"status": "error"}, 404)
+                    if "name" in body:
+                        directory = fixture.library / "images" / (item["id"] + ".info")
+                        (directory / (item["name"] + "." + item["ext"])).rename(directory / (body["name"] + "." + item["ext"]))
+                        item["name"] = body["name"]
+                    item.update({key: body[key] for key in ("annotation", "tags") if key in body})
+                    return self.send_json({"status": "success", "data": item})
                 if path == "/api/item/addFromPaths":
                     fixture.counts["item/addFromPaths"] += 1; fixture.exports.append(body)
                     for index, item in enumerate(body["items"]):
@@ -264,7 +310,7 @@ class Fixture:
                                     destination.parent.mkdir(parents=True, exist_ok=True); shutil.copyfile(resource, destination)
                         added.update(tags=item.get("tags", []), annotation=item.get("annotation", ""))
                     return self.send_json({"status": "success"})
-                if path in fixture.handlers:
+                if not fixture.native_web and path in fixture.handlers:
                     class FakeRequest:
                         async def json(self): return body
                     status, value = asyncio.run(fixture.handlers[path](FakeRequest())); return self.send_json(value, status)
@@ -273,7 +319,7 @@ class Fixture:
                     return self.send_json({"ui": result["ui"], "ids": [asset.metadata["id"] for asset in result["result"][0].items]})
                 if path == "/tests/run-media-import":
                     result = fixture.plugin.NODE_CLASS_MAPPINGS["EagleMediaImport"]().load(body["settings"], body.get("query"))
-                    return self.send_json({"ui": result["ui"], "ids": [[asset.metadata["id"] for asset in bundle.items] for bundle in result["result"]]})
+                    return self.send_json({"ui": result["ui"], "ids": [[asset.metadata["id"] for asset in bundle.items] for bundle in result["result"][:4]]})
                 if path == "/tests/run-export":
                     import torch
                     result = fixture.plugin.NODE_CLASS_MAPPINGS["EagleAssetExport"]().save(torch.zeros((1, 64, 64, 3)), settings=body["settings"],

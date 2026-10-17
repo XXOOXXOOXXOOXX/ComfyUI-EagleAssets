@@ -83,7 +83,11 @@ class MediaCodecTests(unittest.TestCase):
         self.assertTrue((Path(model["_path"]).parent / "model.mtl").is_file())
         data = {"version": 1, "locked": locked, "video_max_seconds": 60, "video_fps": 60}
         result = self.nodes.EagleMediaImport().load(json.dumps(data), "missing")
-        self.assertEqual([len(bundle.items) for bundle in result["result"]], [0, 1, 1, 1])
+        self.assertEqual([len(bundle.items) for bundle in result["result"][:4]], [0, 1, 1, 1])
+        reference = result["result"][4]
+        self.assertIsInstance(reference, dict)
+        self.assertEqual(reference["snapshot_id"], locked["snapshot_id"])
+        self.assertTrue(all(isinstance(item, dict) and not any(isinstance(value, torch.Tensor) for value in item.values()) for item in reference["items"]))
         self.assertEqual(result["result"][1].items[0].value.shape[0], 48)
         self.assertTrue(all(item["media_type"] in {"video", "audio", "model"} for item in result["ui"]["eagle_assets"][0]))
 

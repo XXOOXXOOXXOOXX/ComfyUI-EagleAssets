@@ -1,6 +1,16 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { matchItems, sortItems, catalogKey, canSearch, outputSelection, itemType, validCatalog, queryTokens, makePreviewCache, readPreviewCache, publicPreview } from "../web/model.js";
+import { mediaCatalogView, matchItems, sortItems, catalogKey, canSearch, outputSelection, itemType, validCatalog, queryTokens, makePreviewCache, readPreviewCache, publicPreview } from "../web/model.js";
+
+test("bridge catalog follows the locked snapshot while live preview refreshes", () => {
+    const editor = { state: { locked: { snapshot_id: "snapshot", ids: ["a"] } }, catalogId: "refreshed",
+        items: [{id:"b", name:"new"}], lockedItems: [{id:"a", name:"locked", media_url:"snapshot-url"}] };
+    assert.deepEqual(mediaCatalogView(editor), {snapshot_id:"snapshot", items:editor.lockedItems});
+    editor.lockedItems = [];
+    assert.deepEqual(mediaCatalogView(editor), {snapshot_id:"snapshot", items:[]});
+    editor.state.locked = null;
+    assert.deepEqual(mediaCatalogView(editor), {catalog_id:"refreshed", items:editor.items});
+});
 const items = [{ id: "a", name: "1", width: 64 }, { id: "b", name: "2", width: 80 }, { id: "c", name: "10", width: 32 }];
 test("multi-name search marks all matches in token order without removing catalog entries", () => {
     const result = matchItems(items, "2/1.png/2");
@@ -71,4 +81,18 @@ test("preview metadata cannot be reused across different catalog or selection co
     for(const changes of [{host:"http://other-host:41595"},{folder_ids:["three","two"]},{types:["audio"]},{limit:50},
         {selection_mode:"manual"},{manual_query:"3"},{query_text:"new draft"},{selected_ids:["b","a"]},{locked:{snapshot_id:"different-snapshot"}}])
         assert.equal(readPreviewCache(cache,{...state,...changes}),null,"changed configuration must reject a stale preview");
+});
+test("sort selection filtering outputs only selected assets in click order while retaining the source gallery", () => {
+    const selected={mode:"manual",filter_mode:true,selected_ids:["b","a"],order:["b","a"]};
+    assert.deepEqual(sortItems(items,selected).map(item=>item.id),["b","a"]);
+    assert.equal(items.length,3,"deselected source items remain available for the preview gallery");
+    selected.selected_ids=["a"];selected.order=["a"];
+    assert.deepEqual(sortItems(items,selected).map(item=>item.id),["a"]);
+    selected.selected_ids=[];selected.order=[];
+    assert.deepEqual(sortItems(items,selected),[],"clearing selection emits no assets");
+});
+test("turning off selection filtering preserves legacy all-assets output and supports field sorting", () => {
+    assert.deepEqual(sortItems(items,{mode:"manual",filter_mode:false,selected_ids:["b"],order:["b"]}).map(item=>item.id),["b","a","c"]);
+    assert.deepEqual(sortItems(items,{mode:"width",filter_mode:true,selected_ids:["a","b"]}).map(item=>item.id),["a","b"]);
+    assert.deepEqual(sortItems(items,{mode:"input",filter_mode:true,selected_ids:["missing","a","a"]}).map(item=>item.id),["a"]);
 });

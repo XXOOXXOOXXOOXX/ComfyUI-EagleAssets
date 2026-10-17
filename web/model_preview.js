@@ -73,11 +73,12 @@ export function createModelPreview(container, { url, ext, apiURL }) {
         camera = new THREE.PerspectiveCamera(42, 1, 0.01, 1000);
         renderer = new THREE.WebGLRenderer({ antialias: true }); renderer.setPixelRatio(Math.min(devicePixelRatio || 1, 1.5));
         renderer.outputColorSpace = THREE.SRGBColorSpace;
+        renderer.toneMapping = THREE.ACESFilmicToneMapping; renderer.toneMappingExposure = 1;
         renderer.domElement.setAttribute("aria-label", "3D 模型预览"); renderer.domElement.dataset.modelReady = "false";
         container.append(renderer.domElement);
         controls = new OrbitControls(camera, renderer.domElement); controls.enableDamping = false; controls.addEventListener("change", render);
-        scene.add(new THREE.HemisphereLight(0xffffff, 0x596c89, 2.5));
-        const light = new THREE.DirectionalLight(0xffffff, 3); light.position.set(3, 5, 4); scene.add(light);
+        scene.add(new THREE.HemisphereLight(0xffffff, 0x596c89, 1.6));
+        const light = new THREE.DirectionalLight(0xffffff, 2); light.position.set(3, 5, 4); scene.add(light);
         resize(); observer = new ResizeObserver(resize); observer.observe(container);
         let animations;
         if (ext === "glb" || ext === "gltf") {
@@ -100,11 +101,22 @@ export function createModelPreview(container, { url, ext, apiURL }) {
         }
         if (disposed) { disposeScene(object); return; }
         if (!object) throw new Error("模型没有场景内容");
+        // Library models can contain reversed or inconsistent face winding.
+        // Display both sides in previews; preserve geometry and exported files.
+        object.traverse(part => {
+            for (const material of Array.isArray(part.material) ? part.material : [part.material]) {
+                if (material) { material.side = THREE.DoubleSide; material.needsUpdate = true; }
+            }
+        });
         // Show the actual model's initial pose. Animation data stays in the
         // exported file; the preview does not change the workflow output.
         if (animations?.length) { const mixer = new THREE.AnimationMixer(object); mixer.clipAction(animations[0]).play(); mixer.update(0); }
         scene.add(object); fit(); render();
         renderer.domElement.dataset.modelReady = "true"; container.dataset.modelReady = "true";
     })();
-    return { ready, dispose, reset: fit };
+    return { ready, dispose, reset: fit, setInteraction({ zoomSpeed = 1, panWithLeft = false } = {}) {
+        if (!controls) return;
+        controls.zoomSpeed = zoomSpeed;
+        if (panWithLeft) { controls.mouseButtons.LEFT = scene.userData.THREE.MOUSE.PAN; controls.mouseButtons.RIGHT = scene.userData.THREE.MOUSE.ROTATE; }
+    } };
 }

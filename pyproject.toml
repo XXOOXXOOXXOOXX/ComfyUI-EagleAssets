@@ -1,10 +1,10 @@
 [project]
 name = "comfyui-eagle-assets"
-version = "2.1.1"
+version = "2.3.4"
 description = "Multi-folder Eagle media import, visual ordering, nullable reference outputs and image/audio/video/3D export"
 dependencies = ["trimesh>=4.0"]
 requires-python = ">=3.10"
 license = {text = "MIT"}
 
 [tool.comfy]
-DisplayName = "Eagle Assets — 图片、视频、音频、3D 模型导入 / 排序 / 导出"
+DisplayName = "Eagle Assets — 多媒体导入 / 点选筛选 / 导出 / Ollama 素材桥"

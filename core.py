@@ -189,7 +189,29 @@ class EagleClient:
                              for path, name in zip(paths, names)]}
         if folder_id != "__ALL__":
             payload["folderId"] = folder_id
-        return self.request("item/addFromPaths", payload=payload)
+        self.last_export_library_key = ctx["library_key"]
+        self.last_export_excludes = []
+        for name in names:
+            try:
+                previous = self.request("item/list", {"keyword": name, "limit": 200, "orderBy": "-CREATEDATE"}) or []
+                self.last_export_excludes.append([item["id"] for item in previous if item.get("name") == name])
+            except EagleError:
+                self.last_export_excludes.append(None)
+        result = self.request("item/addFromPaths", payload=payload)
+        self.last_export_items = []
+        for index, (path, name) in enumerate(zip(paths, names)):
+            try:
+                excluded = self.last_export_excludes[index]
+                if excluded is None:
+                    self.last_export_items.append(None)
+                    continue
+                candidates = self.request("item/list", {"keyword": name, "limit": 200, "orderBy": "-CREATEDATE"}) or []
+                matches = [item for item in candidates if item.get("name") == name and item.get("ext", "").lower() == Path(path).suffix[1:].lower()
+                           and item.get("id") not in excluded and not item.get("isDeleted") and (folder_id == "__ALL__" or folder_id in item.get("folders", []))]
+                self.last_export_items.append({**matches[0], "library_key": ctx["library_key"]} if len(matches) == 1 else None)
+            except EagleError:
+                self.last_export_items.append(None)
+        return result
 
 
 def flatten_folders(tree, parents=(), ancestor_ids=()):
@@ -263,7 +285,7 @@ def select_items(items, query="", selected_ids=None, mode="query", match_mode="e
 
 
 def public_item(item):
-    result = {key: item.get(key) for key in ("id", "name", "ext", "width", "height", "size", "tags", "folders", "btime", "mtime", "modificationTime", "duration")}
+    result = {key: item.get(key) for key in ("id", "name", "ext", "width", "height", "size", "tags", "folders", "btime", "mtime", "modificationTime", "duration", "annotation")}
     result["media_type"] = media_type(item)
     return result
 

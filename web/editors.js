@@ -1,6 +1,56 @@
 import { canSearch, catalogKey, validCatalog, itemType, MEDIA_TYPES, matchItems, outputSelection, parseState, sortItems, SORT_MODES,
     makePreviewCache, readPreviewCache } from "./model.js";
 import { canPreviewModel, createModelPreview } from "./model_preview.js";
+import { openMediaViewer } from "./media_viewer.js";
+globalThis.EagleAssetsModelPreview = { canPreviewModel, createModelPreview };
+const connectedEditors = new Set();
+addEventListener("eagle-assets-item-updated", event => {
+    const item = event.detail;
+    for (const editor of connectedEditors) {
+        if (editor.state.library_key && item.library_key && editor.state.library_key !== item.library_key) continue;
+        let changed = false;
+        for (const values of [editor.items, editor.lockedItems, editor.previews, editor.executionItems]) for (const original of values || []) {
+            if ((original.eagle_id || original.id) === item.id) { Object.assign(original, { name: item.name, annotation: item.annotation }); changed = true; }
+        }
+        if (changed) { editor.cachePreview?.(); editor.renderMedia?.(); editor.render(); editor.changed?.(); }
+    }
+});
+
+function attachPreview(editor) {
+    let firstClick, openedAt = 0;
+    const find = target => {
+        const card = target.closest?.(".ea-card,.ea-export-card");
+        return card?.dataset.id ? editor.items?.find(item => item.id === card.dataset.id) : card?.dataset.previewIndex != null ? editor.previews?.[Number(card.dataset.previewIndex)] : null;
+    };
+    const open = item => {
+        const exported = !!editor.previews?.includes(item); let id = exported ? item.eagle_id : item.id;
+        const settings = () => JSON.stringify({ ...editor.state, library_key: item.library_key || editor.state.library_key, folder_id: item.eagle_folder_id || editor.state.folder_id });
+        const info = async () => {
+            const result = id ? await editor.request("item_info", { settings: settings(), item_id: id }) : await editor.request("resolve_export", { settings: settings(), name: item.name, ext: item.eagle_ext || item.ext, excluded_ids: item.eagle_exclude_ids });
+            id = result.item.id; if (exported) item.eagle_id = id;
+            return result.item;
+        };
+        editor.root.querySelectorAll("audio,video").forEach(player => player.pause());
+        openMediaViewer(item, {
+            apiURL: editor.mediaURL,
+            url: value => value.media_url ? editor.mediaURL(value.media_url) : value.filename ? editor.imageURL({ filename: value.filename, subfolder: value.subfolder || "", type: value.type || "temp" }) : editor.imageURL(value.preview),
+            modelURL: value => editor.mediaURL(value.model_url || value.preview_url || value.media_url),
+            info: id || item.eagle_saved ? info : null,
+            rename: id || item.eagle_saved ? async name => { if (!id) await info(); const result = await editor.request("rename", { settings: settings(), item_id: id, name }); dispatchEvent(new CustomEvent("eagle-assets-item-updated", { detail: result.item })); return result.item; } : null,
+        });
+        openedAt = performance.now();
+    };
+    editor.root.addEventListener("click", event => {
+        const item = find(event.target); if (!item) return;
+        if (event.detail === 1) firstClick = { item: item.id || item.filename, state: structuredClone(editor.state) };
+        if (event.detail > 1) {
+            event.preventDefault(); event.stopImmediatePropagation();
+            if (firstClick?.item === (item.id || item.filename) && editor.items) { editor.state = firstClick.state; editor.persist(); editor.render(); }
+            open(item); firstClick = null;
+        }
+    }, true);
+    editor.root.addEventListener("dblclick", event => { const item = find(event.target); if (!item) return; event.preventDefault(); event.stopPropagation(); if (performance.now() - openedAt > 200) open(item); }, true);
+}
 
 const STYLE = `
 .ea-panel{box-sizing:border-box;width:100%;padding:12px;background:#20252e;border:1px solid #445061;border-radius:10px;color:#e9eef6;font:13px/1.45 system-ui,sans-serif;overflow:hidden}.ea-panel *{box-sizing:border-box}
@@ -13,6 +63,7 @@ const STYLE = `
 .ea-panel .ea-annotation{display:block;margin-bottom:9px}.ea-annotation textarea{display:block;margin-top:5px}
 .ea-paths{max-height:200px}
 .ea-export-media{display:grid;gap:10px;max-height:420px;overflow:auto;margin-top:10px}.ea-export-card{padding:9px;border:1px solid #4d627b;border-radius:7px;background:#19232f}.ea-export-card video{width:100%;max-height:280px;display:block;background:#111821;border-radius:5px}.ea-export-card audio{width:100%;display:block;margin:8px 0}.ea-export-name{font-size:12px;overflow-wrap:anywhere;margin-bottom:7px}.ea-export-links{display:flex;gap:9px;align-items:center;justify-content:space-between;margin-top:7px;font-size:12px}.ea-export-links a{color:#97d5f4}.ea-export-links button{padding:3px 7px;font-size:12px}.ea-model-viewer{width:100%;height:280px;overflow:hidden;background:#17202c;border-radius:5px;position:relative}.ea-model-viewer canvas{display:block;width:100%;height:100%;touch-action:none}.ea-model-status{font-size:12px;color:#b7cadf;overflow-wrap:anywhere;margin-top:7px}.ea-export-file{padding:20px;background:#17202c;text-align:center;color:#afc4dd}
+.ea-panel.ea-node-panel{display:flex;flex-direction:column;height:100%;min-height:0}.ea-node-panel> :not(.ea-grid):not(.ea-export-media){flex-shrink:0}.ea-node-panel>.ea-grid,.ea-node-panel>.ea-export-media{flex:1 1 0;min-height:125px;max-height:none}.ea-node-panel>.ea-grid{align-content:start}.ea-node-panel>.ea-export-media{grid-auto-rows:minmax(min-content,1fr);align-content:stretch}.ea-node-panel .ea-export-card{display:flex;flex-direction:column;min-height:0}.ea-node-panel .ea-export-card>img,.ea-node-panel .ea-export-card>video{flex:1 0 125px;height:125px;min-height:125px;max-height:none!important;object-fit:contain}.ea-node-panel .ea-model-viewer{flex:1 0 240px;min-height:240px;height:240px}.ea-node-panel .ea-export-name,.ea-node-panel .ea-export-links,.ea-node-panel .ea-model-status{flex-shrink:0}
 `;
 function installStyle() {
     if (document.getElementById("eagle-assets-style")) return;
@@ -25,8 +76,7 @@ function createRoot(html) {
 }
 function card(item, imageURL, index, selected, clicked, mediaURL = url => url) {
     const type = itemType(item), interactive = type === "video" || type === "audio";
-    const element = document.createElement(interactive ? "div" : "button"); if (!interactive) element.type = "button";
-    else { element.setAttribute("role", "button"); element.tabIndex = 0; }
+    const element = document.createElement("div"); element.setAttribute("role", "button"); element.tabIndex = 0;
     element.className = "ea-card";
     element.dataset.id = item.id; element.dataset.selected = String(selected); element.title = item.name;
     let visual;
@@ -49,7 +99,7 @@ function card(item, imageURL, index, selected, clicked, mediaURL = url => url) {
     if (index > 0) { const badge = document.createElement("span"); badge.className = "ea-badge"; badge.textContent = String(index); element.append(badge); }
     const select = () => { if (!element.disabled && element.getAttribute("aria-disabled") !== "true") clicked(); };
     element.addEventListener("click", select);
-    if (interactive) element.addEventListener("keydown", event => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); select(); } });
+    element.addEventListener("keydown", event => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); select(); } });
     return element;
 }
 const CONNECTION_HEADER = `<div class="ea-row"><label class="ea-grow">Eagle 地址 <input class="ea-host ea-grow" aria-label="Eagle 地址"></label></div>
@@ -68,6 +118,7 @@ class ConnectedEditor {
             this.state.types = (this.state.types || []).filter(type => MEDIA_TYPES[type]);
         }
         this.root = createRoot(html); this.host = this.root.querySelector(".ea-host"); this.token = this.root.querySelector(".ea-token"); this.folder = this.root.querySelector(".ea-folder");
+        connectedEditors.add(this); attachPreview(this);
         this.host.value = this.state.host || "http://localhost:41595"; this.token.value = this.state.token || "";
         this.host.addEventListener("change", () => this.connectionChanged("host", this.host.value.trim()));
         this.token.addEventListener("change", () => this.connectionChanged("token", this.token.value));
@@ -152,7 +203,7 @@ class ConnectedEditor {
         this.pendingConnect = { generation, key: connectionKey, promise }; return promise;
     }
     async action(action) { if (action === "connect") return this.connect(); }
-    destroy() { this.destroyed = true; this.cancelRequests(); }
+    destroy() { this.destroyed = true; connectedEditors.delete(this); this.cancelRequests(); }
 }
 
 export class ImportEditor extends ConnectedEditor {
@@ -369,20 +420,86 @@ export class MediaImportEditor extends ImportEditor {
     constructor(options) { super({ ...options, media: true }); }
 }
 
+export class StudioBridgeEditor {
+    constructor(options) {
+        Object.assign(this, options); this.state = parseState(options.raw, { selected_ids: [] }); this.items = [];
+        this.root = createRoot(`<div class="ea-row"><strong>Eagle → Ollama 创作素材</strong><button data-action="clear">清空选择</button></div>
+            <div class="ea-status" role="status"></div><div class="ea-note">连接多目录媒体导入的 media_catalog 端口，可看到整个已加载图库。点击选择，再点取消，按点击顺序编号。浮窗中开启 Eagle 素材后，这些素材排在直接上传的文件后面。</div><div class="ea-grid"></div><div class="ea-error"></div>`);
+        this.root.querySelector('[data-action="clear"]').addEventListener("click", () => { this.state.selected_ids = []; this.persist(); });
+        this.timer = setInterval(() => this.sync(), 400); this.sync(); this.render();
+    }
+    catalogView() {
+        const live = this.upstreamCatalog?.();
+        if (live?.disconnected) return live;
+        return live?.items?.length || live?.catalog_id || live?.snapshot_id ? live : this.executedSource || live || { items: [] };
+    }
+    selection() {
+        const source = this.catalogView(), lookup = new Map((source.items || []).map(item => [item.id, item]));
+        if (!source.catalog_id && !source.snapshot_id) return [];
+        return [...new Set(this.state.selected_ids || [])].map(id => lookup.get(id)).filter(Boolean).map(item => ({
+            ...(source.catalog_id ? { catalog_id: source.catalog_id } : { snapshot_id: source.snapshot_id }),
+            item_id: item.id, name: item.name, kind: itemType(item), ext: item.ext, preview: item.preview, media_url: item.media_url, model_url: item.model_url,
+        }));
+    }
+    outputItems() {
+        const source = this.catalogView(), lookup = new Map((source.items || []).map(item => [item.id, item]));
+        return [...new Set(this.state.selected_ids || [])].map(id => lookup.get(id)).filter(Boolean);
+    }
+    persist() { this.save(JSON.stringify(this.state)); this.render(); this.changed?.(); this.selectionChanged?.(); }
+    sync() {
+        if (this.destroyed) return;
+        const source = this.catalogView(), key = JSON.stringify(source);
+        if (key === this.sourceKey) return;
+        this.sourceKey = key; this.items = source.items || []; this.render(); this.selectionChanged?.();
+    }
+    render() {
+        const source = this.catalogView(), ready = !!(source.catalog_id || source.snapshot_id), ids = this.state.selected_ids || [];
+        const available = new Set(this.items.map(item => item.id));
+        const missing = ready ? [...new Set(ids)].filter(id => !available.has(id)).length : 0;
+        this.root.querySelector(".ea-status").textContent = `图库 ${this.items.length} 项 · 已选 ${this.outputItems().length} 项 · ${ready ? "浮窗可读取" : "等待上游加载预览"}`
+            + (missing ? ` · ${missing} 个旧选择不在当前上游中，已跳过` : "");
+        const grid = this.root.querySelector(".ea-grid"); grid.replaceChildren();
+        for (const item of this.items) {
+            const index = ids.indexOf(item.id), element = card(item, this.imageURL, index + 1, index >= 0, () => {
+                const selected = [...(this.state.selected_ids || [])], position = selected.indexOf(item.id);
+                if (position >= 0) selected.splice(position, 1); else selected.push(item.id);
+                this.state.selected_ids = selected; this.persist();
+            }, this.mediaURL);
+            element.disabled = !ready; element.setAttribute("aria-disabled", String(!ready)); grid.append(element);
+        }
+        if (!this.items.length) { const empty = document.createElement("div"); empty.className = "ea-empty"; empty.textContent = "连接媒体目录接口，然后在上游导入节点加载素材"; grid.append(empty); }
+    }
+    executed(message) {
+        const source = message.eagle_studio_catalog?.[0];
+        if (source?.items) { this.executedSource = source; this.sourceKey = null; this.sync(); }
+    }
+    restore(raw) { this.state = parseState(raw, { selected_ids: [] }); this.executedSource = null; this.sourceKey = null; this.sync(); this.render(); this.selectionChanged?.(); }
+    destroy() { this.destroyed = true; clearInterval(this.timer); this.root.querySelectorAll("audio,video").forEach(player => player.pause()); }
+}
+
 export class SortEditor {
     constructor(options) {
         Object.assign(this, options); this.state = parseState(options.raw, { mode: "input", order: [], descending: false }); this.items = [];
         this.root = createRoot(`<div class="ea-row"><label class="ea-grow">排序字段 <select class="ea-grow" aria-label="排序字段"></select></label><label><input type="checkbox" aria-label="降序">降序</label></div>
+          <div class="ea-row"><button class="ea-toggle" data-action="filter">输出点选</button><button data-action="all">全选</button><button data-action="none">取消全选</button></div>
           <div class="ea-row"><button data-action="manual">手动点击排序</button><button data-action="clear">重选顺序</button><button data-action="input">恢复输入顺序</button></div>
-          <div class="ea-status" role="status"></div><div class="ea-note">按想要的顺序点选${MEDIA_TYPES[this.mediaType || "image"]}；未点选的内容依照输入顺序追加。编号对应拆分输出接口。</div><div class="ea-grid"></div><div class="ea-error"></div>`);
+          <div class="ea-status" role="status"></div><div class="ea-note">点选筛选开启时，只输出点选素材，按点击顺序编号；再点取消。关闭筛选时输出全部，未指定顺序的素材追加在后。</div><div class="ea-grid"></div><div class="ea-error"></div>`);
         this.mode = this.root.querySelector("select");
         for (const [value, name] of Object.entries(SORT_MODES)) { const option = document.createElement("option"); option.value = value; option.textContent = name; this.mode.append(option); }
         this.descending = this.root.querySelector("input"); this.mode.value = this.state.mode; this.descending.checked = !!this.state.descending;
         this.mode.addEventListener("change", () => { this.state.mode = this.mode.value; this.persist(); });
         this.descending.addEventListener("change", () => { this.state.descending = this.descending.checked; this.persist(); });
         this.root.querySelectorAll("button[data-action]").forEach(button => button.addEventListener("click", () => {
-            if (button.dataset.action === "input") this.state.mode = "input";
-            else { this.state.mode = "manual"; if (button.dataset.action === "clear") this.state.order = []; }
+            const action = button.dataset.action;
+            if (action === "filter") {
+                this.state.filter_mode = !this.state.filter_mode;
+                if (this.state.filter_mode && !Array.isArray(this.state.selected_ids)) this.state.selected_ids = [...(this.state.order || [])];
+            } else if (action === "all") {
+                this.state.filter_mode = true; this.state.selected_ids = this.items.map(item => item.id); this.state.order = [...this.state.selected_ids]; this.state.mode = "manual";
+            } else if (action === "none") {
+                this.state.filter_mode = true; this.state.selected_ids = []; this.state.order = []; this.state.mode = "manual";
+            } else if (action === "input") this.state.mode = "input";
+            else { this.state.mode = "manual"; if (action === "clear") { this.state.order = []; if (this.state.filter_mode) this.state.selected_ids = []; } }
             this.mode.value = this.state.mode; this.persist();
         }));
         this.timer = setInterval(() => this.sync(), 400); this.sync(); this.render();
@@ -400,16 +517,26 @@ export class SortEditor {
     }
     render() {
         const ordered = this.outputItems(), grid = this.root.querySelector(".ea-grid"); grid.replaceChildren();
-        this.root.querySelector(".ea-status").textContent = `${ordered.length} ${this.mediaType && this.mediaType !== "image" ? "项" : "张"} · ${MEDIA_TYPES[this.mediaType || "image"]} · ${SORT_MODES[this.state.mode] || "输入顺序"}`;
+        const filter = this.root.querySelector('[data-action="filter"]'); filter.dataset.on = String(!!this.state.filter_mode); filter.textContent = `输出点选：${this.state.filter_mode ? "开启" : "关闭（输出全部）"}`;
+        this.root.querySelector(".ea-status").textContent = `输入 ${this.items.length} · 输出 ${ordered.length} ${this.mediaType && this.mediaType !== "image" ? "项" : "张"} · ${MEDIA_TYPES[this.mediaType || "image"]} · ${SORT_MODES[this.state.mode] || "输入顺序"}`;
         this.descending.disabled = this.state.mode === "input" || this.state.mode === "manual";
-        for (const [index, item] of ordered.entries()) grid.append(card(item, this.imageURL, index + 1, this.state.order?.includes(item.id), () => {
-            this.state.mode = "manual"; this.mode.value = "manual"; const order = [...(this.state.order || [])], position = order.indexOf(item.id);
+        const rank = new Map(ordered.map((item, index) => [item.id, index + 1]));
+        const display = this.state.filter_mode ? [...ordered, ...this.items.filter(item => !rank.has(item.id))] : ordered;
+        for (const item of display) grid.append(card(item, this.imageURL, rank.get(item.id) || 0, this.state.filter_mode ? rank.has(item.id) : this.state.order?.includes(item.id), () => {
+            this.state.mode = "manual"; this.mode.value = "manual";
+            const order = [...(this.state.filter_mode ? this.state.selected_ids || [] : this.state.order || [])], position = order.indexOf(item.id);
             if (position >= 0) order.splice(position, 1); else order.push(item.id);
-            this.state.order = order; this.persist();
+            this.state.order = order; if (this.state.filter_mode) this.state.selected_ids = [...order]; this.persist();
         }, this.mediaURL));
-        if (!ordered.length) { const empty = document.createElement("div"); empty.className = "ea-empty"; empty.textContent = `连接对应资产接口，检索或点选${MEDIA_TYPES[this.mediaType || "image"]}后即可排序`; grid.append(empty); }
+        if (!this.items.length) { const empty = document.createElement("div"); empty.className = "ea-empty"; empty.textContent = `连接对应资产接口，检索或点选${MEDIA_TYPES[this.mediaType || "image"]}后即可排序`; grid.append(empty); }
     }
-    executed(message) { const items = message.eagle_assets?.[0]; if (Array.isArray(items)) { this.items = items; this.sourceKey = JSON.stringify(this.upstreamItems() || []); this.render(); } }
+    executed(message) {
+        const full = message.eagle_catalog?.[0], items = message.eagle_assets?.[0], upstream = this.upstreamItems() || [];
+        if (Array.isArray(full) || Array.isArray(items)) {
+            this.items = Array.isArray(full) ? full : upstream.length ? upstream : items;
+            this.sourceKey = JSON.stringify(upstream); this.render();
+        }
+    }
     restore(raw) { this.state = parseState(raw, { mode: "input", order: [], descending: false }); this.mode.value = this.state.mode; this.descending.checked = !!this.state.descending; this.render(); }
     destroy() { clearInterval(this.timer); }
 }
@@ -420,7 +547,7 @@ export class ExportEditor extends ConnectedEditor {
         this.initialize(options, CONNECTION_HTML + `<div class="ea-row"><button class="ea-toggle" data-action="eagle">保存到 Eagle：关闭</button><button class="ea-toggle" data-action="output">保存到 output：关闭</button></div>
           <div class="ea-row"><label class="ea-grow">Eagle 标签 <input class="ea-grow" aria-label="Eagle 标签" placeholder="逗号分隔，可留空"></label></div>
           <label class="ea-annotation">Eagle 注释 <textarea aria-label="Eagle 注释" placeholder="可填写完整提示词；连接 annotation 接口时使用接口内容"></textarea></label>
-          <div class="ea-status" role="status"></div><div class="ea-note">预览始终开启。两个保存开关均关闭时，只生成 ComfyUI 临时预览。</div>${options.mediaType && options.mediaType !== "image" ? '<div class="ea-export-media" aria-label="导出媒体预览"><div class="ea-empty">执行后显示实际导出文件的预览</div></div>' : ""}<div class="ea-error" role="alert"></div>`);
+          <div class="ea-status" role="status"></div><div class="ea-note">预览始终开启。两个保存开关均关闭时，只生成 ComfyUI 临时预览。</div><div class="ea-export-media" aria-label="导出媒体预览"><div class="ea-empty">执行后显示实际导出文件的预览，双击放大</div></div><div class="ea-error" role="alert"></div>`);
         this.tags = this.root.querySelector('[aria-label="Eagle 标签"]'); this.tags.value = this.state.tags || "";
         this.tags.addEventListener("change", () => { this.state.tags = this.tags.value; this.persist(); });
         this.annotation = this.root.querySelector('[aria-label="Eagle 注释"]'); this.annotation.value = this.state.annotation || "";
@@ -450,11 +577,14 @@ export class ExportEditor extends ConnectedEditor {
         for (const item of this.previews) {
             const type = item.media_type || this.mediaType, ext = String(item.ext || item.filename?.split(".").pop() || "").toLowerCase();
             const element = document.createElement("article"); element.className = "ea-export-card"; element.dataset.mediaType = type;
+            element.dataset.previewIndex = String(container.children.length);
             const name = document.createElement("div"); name.className = "ea-export-name"; name.textContent = `${item.name || item.filename || MEDIA_TYPES[type]} · ${ext.toUpperCase()} · ${item.type === "output" ? "output" : "临时预览"}`;
             element.append(name); container.append(element);
             const descriptorURL = item.media_url || item.preview_url || (item.filename ? this.imageURL({ filename: item.filename, subfolder: item.subfolder || "", type: item.type || "temp" }) : "");
             const url = item.media_url || item.preview_url ? this.mediaURL(descriptorURL) : descriptorURL;
-            if ((type === "audio" || type === "video") && url) {
+            if (type === "image" && url) {
+                const image = document.createElement("img"); image.src = url; image.alt = item.name || item.filename; image.style.cssText = "display:block;width:100%;max-height:280px;object-fit:contain"; element.append(image);
+            } else if ((type === "audio" || type === "video") && url) {
                 const player = document.createElement(type); player.controls = true; player.preload = "metadata"; player.src = url; player.setAttribute("aria-label", `${MEDIA_TYPES[type]}导出预览`);
                 if (type === "video" && (item.preview || item.preview_url)) player.poster = item.preview ? this.imageURL(item.preview) : this.mediaURL(item.preview_url);
                 for (const event of ["pointerdown", "click", "keydown"]) player.addEventListener(event, e => e.stopPropagation());
@@ -486,8 +616,8 @@ export class ExportEditor extends ConnectedEditor {
     }
     executed(message) {
         this.lastStatus = message.eagle_status?.[0] || "执行完成";
-        if (this.mediaType && this.mediaType !== "image") {
-            const media = message.eagle_media; this.previews = Array.isArray(media?.[0]) ? media[0] : Array.isArray(media) ? media : [];
+        if (this.mediaType) {
+            const media = message.eagle_media; this.previews = Array.isArray(media?.[0]) ? media[0] : Array.isArray(media) ? media : (message.images || []).map(item => ({ ...item, name: item.filename, media_type: "image" }));
             this.renderMedia();
         }
         this.render();

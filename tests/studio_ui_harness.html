@@ -1,0 +1,27 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><title>Eagle + Ollama Studio fixture</title><style>
+body{background:#141a23;font-family:system-ui,sans-serif;color:#d9e4f5;margin:0}.graph-area{width:100%;margin-right:0px;min-height:100vh;overflow:auto}.layout{display:grid;grid-template-columns:570px 570px;gap:20px;padding:20px}.mock-node{background:#29313f;border:1px solid #52667e;border-radius:12px;padding:10px;height:fit-content;margin-bottom:20px}.title{font-size:17px;padding:4px 8px 12px}#graph-canvas{position:absolute;pointer-events:none;width:1px;height:1px;opacity:0}</style></head>
+<body><main class="graph-area"><canvas id="graph-canvas"></canvas><div class="layout"></div></main><script type="module">
+import { app } from '/scripts/app.js';await import('/eagle/web/eagle_assets.js');
+const config=await (await fetch('/tests/studio-config')).json();globalThis.studioFixture=config;app.canvas.canvas=document.getElementById('graph-canvas');
+const constructors={};const defaults={version:1,host:config.mock_host,token:'',folder_id:'',folder_count:1,folder_ids:[''],types:[],limit:20,include_children:false,selection_mode:'manual',selected_ids:[],manual_query:'',locked:null,match_mode:'exact',preview_loaded:false,video_fps:24,video_max_seconds:2};
+for(const type of ['EagleMediaImport','EagleStudioBridge','EagleAssetSort','EagleVideoSort','EagleAudioSort','EagleModelSort']){
+ class Node{constructor(){this.id=null;this.type=type;this.size=[200,100];this.properties={};this.inputs=[];this.outputs=type==='EagleMediaImport'?['image_assets','video_assets','audio_assets','model_assets'].map(name=>({name})):[];this.graph=app.graph;this.widgets=[{name:type.endsWith('Sort')?'sort_settings':'settings',value:JSON.stringify(type.endsWith('Sort')?{version:1,mode:'manual',order:[],descending:false,filter_mode:true,selected_ids:[]}:type==='EagleStudioBridge'?{version:1,selected_ids:[]}:defaults)}]}
+ addDOMWidget(name,type,element,options){this.target.querySelector('.mount').append(element);const widget={name,type,element,options};this.widgets.push(widget);return widget}addOutput(name,type){this.outputs.push({name,type})}setSize(size){this.size=size}setDirtyCanvas(){}
+ serialize(){const record={id:this.id,type:this.type,properties:JSON.parse(JSON.stringify(this.properties)),inputs:JSON.parse(JSON.stringify(this.inputs)),widgets:this.widgets.filter(widget=>widget.options?.serialize!==false).map(widget=>({name:widget.name,value:widget.serializeValue?widget.serializeValue():widget.value}))};this.onSerialize?.(record);return record}
+ }
+ const eagle=app.extensions.find(extension=>extension.name==='EagleAssets.ImportSortSplitExport');await eagle.beforeRegisterNodeDef(Node,{name:type});constructors[type]=Node;
+}
+globalThis.testNodes={};app.graph.links={};
+globalThis.serializeStudioWorkflow=()=>JSON.parse(JSON.stringify({links:app.graph.links,nodes:Object.values(testNodes).map(node=>node.serialize())}));
+globalThis.mountStudioWorkflow=async serialized=>{
+ for(const node of Object.values(testNodes))node.onRemoved?.();testNodes={};app.graph.links={...(serialized?.links||{})};document.querySelector('.layout').replaceChildren();
+ const records=serialized?.nodes||['EagleMediaImport','EagleStudioBridge','EagleAssetSort','EagleVideoSort','EagleAudioSort','EagleModelSort'].map((type,index)=>({id:index+1,type,properties:{},widgets:[]}));
+ for(const record of records){const node=new constructors[record.type]();node.id=record.id;const key={EagleMediaImport:'import',EagleStudioBridge:'bridge',EagleAssetSort:'sort-image',EagleVideoSort:'sort-video',EagleAudioSort:'sort-audio',EagleModelSort:'sort-model'}[record.type];const target=document.createElement('section');target.className='mock-node';target.id=key;target.innerHTML='<div class="title">'+record.type+'</div><div class="mount"></div>';document.querySelector('.layout').append(target);node.target=target;testNodes[node.id]=node;
+  const bridge=record.type==='EagleStudioBridge',sort=record.type.endsWith('Sort'),slot=bridge?4:{EagleAssetSort:0,EagleVideoSort:1,EagleAudioSort:2,EagleModelSort:3}[record.type];node.inputs=record.inputs||(bridge||sort?[{name:bridge?'media':'assets',link:node.id}]:[]);if(bridge||sort)app.graph.links[node.id]={origin_id:1,origin_slot:slot};node.onNodeCreated();Object.assign(node.properties,record.properties||{});for(const saved of record.widgets){const widget=node.widgets.find(widget=>widget.name===saved.name);if(widget)widget.value=saved.value}node.onConfigure?.(record);
+ }
+ globalThis.importNode=testNodes[1];globalThis.bridgeNode=testNodes[2];
+};
+await mountStudioWorkflow();
+const prefsKey='ollama-studio.ui.v1';try{const prefs=JSON.parse(localStorage.getItem(prefsKey)||'{}');prefs.host=config.mock_host;if(!prefs.model)prefs.model='mock-vision:latest';localStorage.setItem(prefsKey,JSON.stringify(prefs))}catch{}
+await import('/studio/web/ollama_studio.js');for(const extension of app.extensions)await extension.setup?.();globalThis.studioHarnessReady=true;
+</script></body></html>

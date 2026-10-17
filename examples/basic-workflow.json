@@ -79,7 +79,7 @@
         "Node name for S&R": "EagleAssetSort"
       },
       "widgets_values": [
-        "{\"version\": 1, \"mode\": \"input\", \"order\": [], \"descending\": false}"
+        "{\"version\": 1, \"mode\": \"manual\", \"order\": [], \"selected_ids\": [], \"filter_mode\": true, \"descending\": false}"
       ]
     },
     {

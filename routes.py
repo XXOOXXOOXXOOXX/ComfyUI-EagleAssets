@@ -1,7 +1,7 @@
 import asyncio
 
 from .core import EagleError, parse_settings
-from .runtime import client_for, lock_catalog, prepare_catalog, snapshot_previews, media_file, model_resource
+from .runtime import client_for, lock_catalog, prepare_catalog, snapshot_previews, media_file, model_resource, inspect_eagle_item, resolve_export_item
 
 
 def register_routes():
@@ -60,6 +60,18 @@ def register_routes():
     @routes.post("/eagle_assets/catalog")
     async def catalog(request):
         return await handle(request, lambda body: prepare_catalog(parse_settings(body["settings"])))
+
+    @routes.post("/eagle_assets/item_info")
+    async def item_info(request):
+        return await handle(request, lambda body: inspect_eagle_item(parse_settings(body["settings"]), body.get("item_id")))
+
+    @routes.post("/eagle_assets/rename")
+    async def rename(request):
+        return await handle(request, lambda body: inspect_eagle_item(parse_settings(body["settings"]), body.get("item_id"), body.get("name")))
+
+    @routes.post("/eagle_assets/resolve_export")
+    async def resolve_export(request):
+        return await handle(request, lambda body: resolve_export_item(parse_settings(body["settings"]), body.get("name"), body.get("ext"), body.get("excluded_ids")))
 
     @routes.post("/eagle_assets/lock")
     async def lock(request):

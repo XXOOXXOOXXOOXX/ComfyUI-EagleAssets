@@ -1,10 +1,20 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
-import { ImportEditor, MediaImportEditor, SortEditor, ExportEditor } from "./editors.js";
+import { ImportEditor, MediaImportEditor, SortEditor, ExportEditor, StudioBridgeEditor } from "./editors.js";
+import { mediaCatalogView } from "./model.js";
+import { responsiveEditor } from "./layout.js";
 
 const SORT_TYPES = { EagleAssetSort: "image", EagleVideoSort: "video", EagleAudioSort: "audio", EagleModelSort: "model" };
 const SPLIT_TYPES = { EagleAssetSplit: ["image", "IMAGE", 9], EagleVideoSplit: ["video", "IMAGE", 3], EagleAudioSplit: ["audio", "AUDIO", 3], EagleModelSplit: ["model", "STRING", 9] };
 const EXPORT_TYPES = { EagleAssetExport: "image", EagleAudioExport: "audio", EagleVideoExport: "video", EagleModelExport: "model" };
+const studioNodes = new Set();
+const resolvingCatalogs = new Set();
+function studioSelection() {
+    return [...studioNodes].filter(node => node.graph === app.graph && app.graph?.getNodeById(node.id) === node)
+        .flatMap(node => (node.eagleAssetsEditor?.selection?.() || []).map(item => ({ ...item, bridge_id: node.id })));
+}
+function announceStudioSelection() { globalThis.dispatchEvent(new CustomEvent("eagle-assets-studio-selection", { detail: studioSelection() })); }
+globalThis.EagleAssetsStudioBridge = { getSelection: studioSelection };
 
 function imageURL(preview) {
     if (!preview) return "";
@@ -16,8 +26,8 @@ async function request(action, body) {
     if (!response.ok || !data.ok) throw new Error(data.error || "Eagle 操作失败");
     return data;
 }
-function upstreamEditor(node) {
-    let current = node, slot = current.inputs?.findIndex(input => input.name === "assets");
+function upstreamEditor(node, inputName = "assets") {
+    let current = node, slot = current.inputs?.findIndex(input => input.name === inputName);
     const seen = new Set([node.id]);
     for (let depth = 0; depth < 64; depth++) {
         const id = current.inputs?.[slot]?.link; if (id == null) return null;
@@ -30,6 +40,15 @@ function upstreamEditor(node) {
         slot = 0;
     }
     return null;
+}
+function upstreamCatalog(node) {
+    if (resolvingCatalogs.has(node)) return { items: [], disconnected: true };
+    resolvingCatalogs.add(node);
+    try {
+        const editor = upstreamEditor(node, "media")?.editor;
+        if (!editor) return { items: [], disconnected: true };
+        return mediaCatalogView(editor);
+    } finally { resolvingCatalogs.delete(node); }
 }
 function setupSplit(node, [prefix, type, defaultCount]) {
     const widget = node.widgets?.find(widget => widget.name === "output_count"); if (!widget) return;
@@ -47,14 +66,20 @@ function setupSplit(node, [prefix, type, defaultCount]) {
     node.onConfigure = function () { const result = configured?.apply(this, arguments); sync(); return result; };
     sync();
 }
+function ensureMediaCatalogOutput(node) {
+    // Older saved workflows have four serialized outputs. Append the new port
+    // without shifting their existing image/video/audio/model connections.
+    if (node.outputs?.length === 4) node.addOutput("media_catalog", "EAGLE_MEDIA_CATALOG");
+}
 
 app.registerExtension({
     name: "EagleAssets.ImportSortSplitExport",
     async beforeRegisterNodeDef(nodeType, nodeData) {
-        if (!["EagleAssetImport", "EagleMediaImport", ...Object.keys(EXPORT_TYPES), ...Object.keys(SORT_TYPES), ...Object.keys(SPLIT_TYPES)].includes(nodeData.name)) return;
+        if (!["EagleAssetImport", "EagleMediaImport", "EagleStudioBridge", ...Object.keys(EXPORT_TYPES), ...Object.keys(SORT_TYPES), ...Object.keys(SPLIT_TYPES)].includes(nodeData.name)) return;
         const created = nodeType.prototype.onNodeCreated;
         nodeType.prototype.onNodeCreated = function () {
             const result = created?.apply(this, arguments);
+            if (nodeData.name === "EagleMediaImport") ensureMediaCatalogOutput(this);
             if (SPLIT_TYPES[nodeData.name]) { setupSplit(this, SPLIT_TYPES[nodeData.name]); return result; }
             const sortType = SORT_TYPES[nodeData.name], exportType = EXPORT_TYPES[nodeData.name], mediaType = sortType || exportType;
             const importing = nodeData.name === "EagleAssetImport" || nodeData.name === "EagleMediaImport";
@@ -65,6 +90,7 @@ app.registerExtension({
             if (stateWidget.inputEl) stateWidget.inputEl.style.display = "none";
             const options = {
                 raw: stateWidget.value, request, imageURL, mediaURL: url => api.apiURL(url), mediaType,
+                upstreamCatalog: () => upstreamCatalog(this), selectionChanged: announceStudioSelection,
                 readPreview: () => this.properties?.eagle_assets_preview,
                 writePreview: value => {
                     this.properties ||= {};
@@ -77,28 +103,31 @@ app.registerExtension({
             };
             const editor = nodeData.name === "EagleAssetImport" ? new ImportEditor(options)
                 : nodeData.name === "EagleMediaImport" ? new MediaImportEditor(options)
+                : nodeData.name === "EagleStudioBridge" ? new StudioBridgeEditor(options)
                 : sortType ? new SortEditor(options) : new ExportEditor(options);
             this.eagleAssetsEditor = editor;
-            let height = nodeData.name === "EagleMediaImport" ? 1060 : importing ? 850 : sortType ? 510 : exportType === "image" ? 440 : exportType === "audio" ? 630 : 820;
-            const minimumHeight = height;
-            const widget = this.addDOMWidget("eagle_assets_editor", "eagle_assets", editor.root, {
-                serialize: false, hideOnZoom: false, getMinHeight: () => minimumHeight, getHeight: () => height,
-            }); widget.options.serialize = false;
+            if (nodeData.name === "EagleStudioBridge") { studioNodes.add(this); announceStudioSelection(); }
+            const height = nodeData.name === "EagleMediaImport" ? 1060 : nodeData.name === "EagleStudioBridge" ? 560 : importing ? 850 : sortType ? 560 : exportType === "image" ? 440 : exportType === "audio" ? 630 : 820;
+            const layout = responsiveEditor(this, editor);
+            const widget = this.addDOMWidget("eagle_assets_editor", "eagle_assets", editor.root, layout.options); widget.options.serialize = false;
             this.setSize([Math.max(this.size[0], 550), Math.max(this.size[1], height + 90)]);
-            if (nodeData.name === "EagleMediaImport" || (exportType && exportType !== "image")) {
-                editor.heightChanged = () => {
-                    const required = Math.max(minimumHeight, Math.ceil(editor.root.scrollHeight));
-                    if (required === height) return;
-                    height = required; this.setSize([Math.max(this.size[0], 550), Math.max(this.size[1], height + 90)]); this.setDirtyCanvas?.(true, true);
-                };
-                editor.root.querySelector("details")?.addEventListener("toggle", () => editor.heightChanged());
-            }
+            editor.heightChanged = layout.refresh;
             const configured = this.onConfigure;
-            this.onConfigure = function () { const result = configured?.apply(this, arguments); editor.restore(stateWidget.value); return result; };
+            this.onConfigure = function () {
+                const result = configured?.apply(this, arguments);
+                if (nodeData.name === "EagleMediaImport") ensureMediaCatalogOutput(this);
+                editor.restore(stateWidget.value); layout.refresh(); return result;
+            };
             const executed = this.onExecuted;
-            this.onExecuted = function (message) { const result = executed?.apply(this, arguments); editor.executed?.(message); return result; };
+            this.onExecuted = function (message) {
+                if (exportType === "image" && message.eagle_media) {
+                    // Also handle execution results cached by an older plugin version.
+                    delete message.images; this.imgs = []; this.imageIndex = null;
+                }
+                const result = executed?.apply(this, arguments); editor.executed?.(message); return result;
+            };
             const removed = this.onRemoved;
-            this.onRemoved = function () { editor.destroy?.(); return removed?.apply(this, arguments); };
+            this.onRemoved = function () { layout.dispose(); editor.destroy?.(); if (studioNodes.delete(this)) announceStudioSelection(); return removed?.apply(this, arguments); };
             return result;
         };
     },

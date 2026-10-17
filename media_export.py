@@ -244,6 +244,16 @@ def _finish(paths, descriptors, data, client, tags, annotation, kind, eagle_path
             preview["preview_url"] = model_preview_url(path)
             preview["media_url"] = _media_url(path, "model")
         media.append(preview)
+        preview["annotation"] = str(annotation if annotation is not None else data.get("annotation", ""))
+        exported = getattr(client, "last_export_items", []) if client else []
+        match = exported[len(media) - 1] if len(exported) >= len(media) else None
+        if client is not None:
+            index = len(media) - 1
+            previous = getattr(client, "last_export_excludes", [])
+            preview.update(eagle_saved=True, eagle_folder_id=data["folder_id"], library_key=getattr(client, "last_export_library_key", data.get("library_key")),
+                           eagle_ext=(eagle_paths or paths)[index].suffix[1:].lower(), eagle_exclude_ids=previous[index] if index < len(previous) else None)
+        if match:
+            preview.update(eagle_id=match["id"], library_key=match["library_key"])
     label = {"audio": "音频", "video": "视频", "model": "模型"}[kind]
     ui = {"eagle_media": [media], "eagle_status": [f"预览 {len(paths)} 个{label} ｜ output {'已保存' if data.get('save_output') and paths else '关闭'} ｜ Eagle {'已保存' if client is not None and paths else '关闭'}{note}"]}
     native = [{key: descriptor[key] for key in ("filename", "subfolder", "type")} for descriptor in descriptors]

@@ -6,6 +6,17 @@ const EXTENSIONS = {
 };
 const ASSET_EXT = new Set(Object.values(EXTENSIONS).flat());
 export const MEDIA_TYPES = { image: "图片", video: "视频", audio: "音频", model: "模型" };
+export function mediaCatalogView(editor) {
+    if (editor.catalogView) return editor.catalogView();
+    const snapshot_id = editor.state?.locked?.snapshot_id;
+    if (snapshot_id) {
+        // A refreshed preview is independent from the locked execution output.
+        // Always use snapshot descriptors/URLs, even while a live catalog exists.
+        const ids = new Set(editor.state.locked.ids || []);
+        return { snapshot_id, items: (editor.lockedItems || []).filter(item => ids.has(item.id)) };
+    }
+    return { catalog_id: editor.catalogId || null, items: editor.items || [] };
+}
 export function itemType(item) {
     if (item.media_type) return item.media_type;
     const ext = String(item.ext || "").toLowerCase();
@@ -45,7 +56,9 @@ function naturalCompare(a, b) {
     return 0;
 }
 export function sortItems(items, state) {
-    const result = [...items], mode = state.mode || "input";
+    const lookup = new Map(items.map(item => [item.id, item]));
+    const result = state.filter_mode ? [...new Set(state.selected_ids || [])].map(id => lookup.get(id)).filter(Boolean) : [...items];
+    const mode = state.mode || "input";
     if (mode === "manual") {
         const order = [...new Set(state.order || [])], rank = new Map(order.map((id, i) => [id, i]));
         return result.sort((a, b) => (rank.get(a.id) ?? order.length) - (rank.get(b.id) ?? order.length));
@@ -92,6 +105,7 @@ export function publicPreview(item) {
         }
     }
     if (typeof item.media_url === "string" && /^\/eagle_assets\/media\/[a-f0-9]{32}$/.test(item.media_url)) result.media_url = item.media_url;
+    if (typeof item.model_url === "string" && /^\/eagle_assets\/model\/[a-f0-9]{32}\/[^?#]+$/.test(item.model_url)) result.model_url = item.model_url;
     return result;
 }
 export function makePreviewCache(state, items, executionItems) {
