@@ -23,6 +23,9 @@ def load_studio():
 async def main():
     with tempfile.TemporaryDirectory(prefix="eagle-ollama-studio-test-") as root:
         fixture = Fixture(root, media=True, native_web=True)
+        from PIL import Image
+        for name, color in [("live-red.png", (255, 0, 0)), ("live-blue.png", (0, 0, 255))]:
+            Image.new("RGB", (96, 64), color).save(Path(root) / "input" / name)
         studio = load_studio()
         app = web.Application(client_max_size=1024 ** 3)
         app.router.add_routes(fixture.handlers)
@@ -45,6 +48,14 @@ async def main():
         app.router.add_get("/tests/studio-config", config)
         app.router.add_get("/tests/studio-stats", stats)
         app.router.add_post("/tests/run-media-import", run_media)
+
+        async def run_images(request):
+            import torch
+            body = await request.json()
+            images = {key: torch.tensor(color, dtype=torch.float32).reshape(1, 1, 1, 3).repeat(1, 16, 16, 1)
+                      for key, color in body.items()}
+            return web.json_response(fixture.plugin.NODE_CLASS_MAPPINGS["EagleImageStudioBridge"]().publish(**images))
+        app.router.add_post("/tests/run-image-bridge", run_images)
 
         async def script(request):
             if request.match_info["filename"] == "app.js":

@@ -9,7 +9,8 @@ from PIL.PngImagePlugin import PngInfo
 
 from .core import (AssetBundle, EagleError, MAX_OUTPUTS, bundle_from_items, parse_settings,
                    select_items, sort_bundle, split_bundle, MEDIA_EXTENSIONS, decoder_settings, validate_model_resources)
-from .runtime import catalog_for, client_for, preview_item, publish_catalog, snapshot_store, snapshot_previews, studio_catalog
+from .runtime import catalog_for, client_for, preview_item, publish_catalog, snapshot_store, snapshot_previews, studio_catalog, publish_studio_images
+from .export_target import TARGET_TYPE, TARGET_INPUT, resolve_target, target_result
 
 DEFAULT_IMPORT = json.dumps({"version": 1, "host": "http://localhost:41595", "token": "", "folder_id": "", "limit": 20,
     "include_children": False, "manual_query": "", "selection_mode": "manual", "selected_ids": [], "locked": None, "match_mode": "exact", "text_locked": False,
@@ -220,6 +221,30 @@ class EagleModelToFile3D:
         return (file_type(str(file)),)
 
 
+class ImageBridgeInputs(dict):
+    """Advertise one socket, accept any numbered IMAGE socket at execution."""
+    def __contains__(self, key):
+        return isinstance(key, str) and re.fullmatch(r"image_[1-9]\d*", key) is not None
+
+    def __getitem__(self, key):
+        if key in self:
+            return ("IMAGE",)
+        raise KeyError(key)
+
+
+class EagleImageStudioBridge:
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {"required": {}, "optional": ImageBridgeInputs({"image_1": ("IMAGE",)})}
+
+    RETURN_TYPES = ()
+    FUNCTION, CATEGORY, OUTPUT_NODE = "publish", "Eagle Assets", True
+
+    def publish(self, **images):
+        ordered = sorted(((int(key[6:]), value) for key, value in images.items() if key in ImageBridgeInputs() and value is not None), key=lambda pair: pair[0])
+        return {"ui": {"eagle_image_studio": [publish_studio_images(ordered)]}}
+
+
 class EagleStudioBridge:
     @classmethod
     def INPUT_TYPES(cls):
@@ -254,7 +279,7 @@ def redact_metadata(value):
     if isinstance(value, dict):
         result = {}
         for key, item in value.items():
-            if key in {"token", "eagle_token"}:
+            if key in {"token", "eagle_token", "_bridge_auth", "bridge_auth"}:
                 result[key] = ""
             else:
                 result[key] = redact_metadata(item)
@@ -275,20 +300,22 @@ class EagleAssetExport:
         return {"required": {"images": ("IMAGE",), "filename_prefix": ("STRING", {"default": "ComfyUI"}),
                              "settings": ("STRING", {"default": DEFAULT_EXPORT})},
                 "optional": {"tags": ("STRING", {"forceInput": True, "tooltip": "连接后覆盖手动标签；逗号、换行或 JSON 字符串数组分隔。"}),
-                             "annotation": ("STRING", {"forceInput": True, "tooltip": "连接后覆盖手动 Eagle 注释，保留完整提示词。"})},
+                             "annotation": ("STRING", {"forceInput": True, "tooltip": "连接后覆盖手动 Eagle 注释，保留完整提示词。"}),
+                             "eagle_target": TARGET_INPUT},
                 "hidden": {"prompt": "PROMPT", "extra_pnginfo": "EXTRA_PNGINFO"}}
-    RETURN_TYPES = ()
+    RETURN_TYPES = (TARGET_TYPE,)
+    RETURN_NAMES = ("eagle_target",)
     FUNCTION = "save"
     OUTPUT_NODE = True
     CATEGORY = "Eagle Assets"
 
-    def save(self, images, filename_prefix="ComfyUI", settings=DEFAULT_EXPORT, prompt=None, extra_pnginfo=None, tags=None, annotation=None):
+    def save(self, images, filename_prefix="ComfyUI", settings=DEFAULT_EXPORT, prompt=None, extra_pnginfo=None, tags=None, annotation=None, eagle_target=None):
         import folder_paths
         from nodes import SaveImage, PreviewImage
-        data = parse_settings(settings)
+        data = resolve_target(settings, eagle_target)
         to_output, to_eagle = bool(data.get("save_output")), bool(data.get("save_eagle"))
         if images is None:
-            return {"ui": {"eagle_media": [[]], "eagle_status": ["此接口没有图片，跳过预览和保存。"]}}
+            return target_result({"ui": {"images": [], "eagle_media": [[]], "eagle_status": ["此接口没有图片，跳过预览和保存。"]}}, data)
         if to_eagle:
             # Validate destination before creating any persistent output image.
             client = client_for(data)
@@ -299,6 +326,7 @@ class EagleAssetExport:
             folder_ids(ctx["folders"], data["folder_id"], False)
             if data.get("library_key") and ctx["library_key"] != data["library_key"]:
                 raise EagleError("Eagle 当前素材库已变化，请重新选择导出目录。")
+            data["library_key"] = ctx["library_key"]
         clean_prompt, clean_extra = redact_metadata(prompt), redact_metadata(extra_pnginfo)
         # Use native save and preview nodes for counters, subfolders, workflow PNG metadata and UI image descriptors.
         saver = SaveImage() if to_output else PreviewImage()
@@ -325,11 +353,10 @@ class EagleAssetExport:
             if match: item.update(eagle_id=match["id"], library_key=match["library_key"])
             previews.append(item)
         result["ui"]["eagle_media"] = [previews]
-        # The custom editor owns the preview (and its double-click viewer).
-        # `images` also triggers ComfyUI's native canvas preview below the DOM
-        # widget, drawing the same image twice and overlapping the node layout.
-        result["ui"].pop("images", None)
-        return result
+        # Keep native file descriptors for history and the Assets sidebar.
+        # Only the node's canvas renderer is suppressed by the frontend; the
+        # shared execution result must remain usable by ComfyUI itself.
+        return target_result(result, data)
 
 
 def parse_tags(value):

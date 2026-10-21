@@ -54,6 +54,37 @@ class BridgeTests(unittest.TestCase):
             with self.assertRaisesRegex(self.core.EagleError, "文字列表"):
                 self.publish(reference, ids)
 
+    def test_direct_bridge_schema_empty_and_bad_images(self):
+        import torch
+        cls = self.nodes.EagleImageStudioBridge
+        schema = cls.INPUT_TYPES()
+        self.assertEqual(list(schema["optional"]), ["image_1"])
+        self.assertEqual(schema["optional"]["image_10000"], ("IMAGE",))
+        self.assertNotIn("path", schema["optional"])
+        self.assertEqual(cls.RETURN_TYPES, ())
+        self.assertEqual(cls().publish()["ui"]["eagle_image_studio"], [{"items": []}])
+        self.assertEqual(cls().publish(image_1=None)["ui"]["eagle_image_studio"], [{"items": []}])
+        for image in ["private.png", torch.zeros(2, 2, 3), torch.zeros(1, 2, 2, 7)]:
+            with self.assertRaisesRegex(self.core.EagleError, "IMAGE"):
+                cls().publish(image_1=image)
+
+    def test_live_image_previews_only_read_comfy_files_and_keep_slot_order(self):
+        from pathlib import Path
+        from PIL import Image
+        directory = Path(self.temp.name) / "input"
+        Image.new("RGB", (12, 8), (255, 0, 0)).save(directory / "live-red.jpg")
+        Image.new("RGB", (12, 8), (0, 0, 255)).save(directory / "live-blue.png")
+        result = self.runtime.preview_studio_images([
+            {"slot": 10, "files": [{"filename": "live-blue.png", "type": "input"}]},
+            {"slot": 2, "files": [{"filename": "live-red.jpg", "type": "input"}]},
+        ])
+        self.assertEqual([item["id"] for item in result["items"]], ["image_2_1", "image_10_1"])
+        self.assertEqual({item["ext"] for item in result["items"]}, {"png"})
+        merged = self.runtime.preview_studio_images([{"slot": 10, "snapshot_id": result["snapshot_id"]}, {"slot": 1, "files": [{"filename": "live-red.jpg", "type": "input"}]}])
+        self.assertEqual([item["id"] for item in merged["items"]], ["image_1_1", "image_10_1"])
+        for descriptor in [{"filename": "../live-red.jpg", "type": "input"}, {"filename": "live-red.jpg", "type": "private"}, {"filename": "x.png", "subfolder": "../user", "type": "input"}]:
+            with self.assertRaises(self.core.EagleError): self.runtime.preview_studio_images([{"slot": 1, "files": [descriptor]}])
+
 
 if __name__ == "__main__":
     unittest.main()

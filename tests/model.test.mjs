@@ -1,6 +1,18 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mediaCatalogView, matchItems, sortItems, catalogKey, canSearch, outputSelection, itemType, validCatalog, queryTokens, makePreviewCache, readPreviewCache, publicPreview } from "../web/model.js";
+import { mediaCatalogView, matchItems, sortItems, catalogKey, canSearch, outputSelection, itemType, validCatalog, queryTokens, makePreviewCache, readPreviewCache, publicPreview, exportPreview } from "../web/model.js";
+
+test("export caches keep file and Eagle associations without expiring media URLs or connection secrets", () => {
+    const item = { filename: "image.png", subfolder: "images/角色", type: "output", media_type: "image", annotation: "完整提示词", eagle_id: "new-id", eagle_saved: true,
+        library_key: "library", eagle_exclude_ids: ["older-id"], token: "secret", _bridge_auth: "private", _path: "C:/private.png", media_url: "/eagle_assets/media/" + "a".repeat(32) };
+    const cached = exportPreview(item);
+    assert.equal(cached.annotation, item.annotation); assert.equal(cached.eagle_id, item.eagle_id);
+    assert.deepEqual(cached.eagle_exclude_ids, ["older-id"]);
+    for (const field of ["token", "_bridge_auth", "_path", "media_url"]) assert.ok(!(field in cached));
+    assert.equal(exportPreview({ ...item, subfolder: "../private" }), null);
+    assert.equal(exportPreview({ ...item, filename: "C:/private.png" }), null);
+    assert.equal(exportPreview({ ...item, type: "input" }), null);
+});
 
 test("bridge catalog follows the locked snapshot while live preview refreshes", () => {
     const editor = { state: { locked: { snapshot_id: "snapshot", ids: ["a"] } }, catalogId: "refreshed",

@@ -4,14 +4,16 @@ body{background:#141a23;font-family:system-ui,sans-serif;color:#d9e4f5;margin:0}
 import { app } from '/scripts/app.js';await import('/eagle/web/eagle_assets.js');
 const config=await (await fetch('/tests/studio-config')).json();globalThis.studioFixture=config;app.canvas.canvas=document.getElementById('graph-canvas');
 const constructors={};const defaults={version:1,host:config.mock_host,token:'',folder_id:'',folder_count:1,folder_ids:[''],types:[],limit:20,include_children:false,selection_mode:'manual',selected_ids:[],manual_query:'',locked:null,match_mode:'exact',preview_loaded:false,video_fps:24,video_max_seconds:2};
-for(const type of ['EagleMediaImport','EagleStudioBridge','EagleAssetSort','EagleVideoSort','EagleAudioSort','EagleModelSort']){
+for(const type of ['EagleMediaImport','EagleStudioBridge','EagleAssetSort','EagleVideoSort','EagleAudioSort','EagleModelSort','EagleImageStudioBridge']){
  class Node{constructor(){this.id=null;this.type=type;this.size=[200,100];this.properties={};this.inputs=[];this.outputs=type==='EagleMediaImport'?['image_assets','video_assets','audio_assets','model_assets'].map(name=>({name})):[];this.graph=app.graph;this.widgets=[{name:type.endsWith('Sort')?'sort_settings':'settings',value:JSON.stringify(type.endsWith('Sort')?{version:1,mode:'manual',order:[],descending:false,filter_mode:true,selected_ids:[]}:type==='EagleStudioBridge'?{version:1,selected_ids:[]}:defaults)}]}
+ addInput(name,type){this.inputs.push({name,type,link:null})}removeInput(index){this.inputs.splice(index,1)}
  addDOMWidget(name,type,element,options){this.target.querySelector('.mount').append(element);const widget={name,type,element,options};this.widgets.push(widget);return widget}addOutput(name,type){this.outputs.push({name,type})}setSize(size){this.size=size}setDirtyCanvas(){}
  serialize(){const record={id:this.id,type:this.type,properties:JSON.parse(JSON.stringify(this.properties)),inputs:JSON.parse(JSON.stringify(this.inputs)),widgets:this.widgets.filter(widget=>widget.options?.serialize!==false).map(widget=>({name:widget.name,value:widget.serializeValue?widget.serializeValue():widget.value}))};this.onSerialize?.(record);return record}
  }
  const eagle=app.extensions.find(extension=>extension.name==='EagleAssets.ImportSortSplitExport');await eagle.beforeRegisterNodeDef(Node,{name:type});constructors[type]=Node;
 }
 globalThis.testNodes={};app.graph.links={};
+globalThis.addImageBridge=()=>{document.getElementById('image-direct')?.remove();const target=document.createElement('section');target.id='image-direct';target.className='mock-node';target.innerHTML='<div class="title">图片直连素材桥 · Ollama</div><div class="mount"></div>';document.querySelector('.layout').append(target);const node=new constructors.EagleImageStudioBridge();node.target=target;node.id=100;node.widgets=[];node.inputs=[{name:'image_1',type:'IMAGE',link:null}];testNodes[node.id]=node;node.onNodeCreated();globalThis.imageBridge=node;return node};
 globalThis.serializeStudioWorkflow=()=>JSON.parse(JSON.stringify({links:app.graph.links,nodes:Object.values(testNodes).map(node=>node.serialize())}));
 globalThis.mountStudioWorkflow=async serialized=>{
  for(const node of Object.values(testNodes))node.onRemoved?.();testNodes={};app.graph.links={...(serialized?.links||{})};document.querySelector('.layout').replaceChildren();

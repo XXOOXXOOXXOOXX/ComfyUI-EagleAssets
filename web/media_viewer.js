@@ -101,6 +101,7 @@ export class MediaViewer {
             viewer.ready.then(() => viewer.setInteraction({ zoomSpeed: this.prefs.sensitivity, panWithLeft: true })).catch(error => { if (this.model === viewer) this.status.textContent = "模型预览不可用：" + error.message; });
         } else if (type === "image" || type === "video") {
             this.visual = el(type === "image" ? "img" : "video", "eam-transform"); this.visual.src = url; this.visual.draggable = false;
+            if (type === "image") Object.assign(this.visual.style, { backgroundColor: "#eee", backgroundImage: "conic-gradient(#aaa 25%,#eee 0 50%,#aaa 0 75%,#eee 0)", backgroundSize: "16px 16px" });
             if (type === "video") { this.media = this.visual; this.media.preload = "metadata"; }
             this.stage.append(this.visual); this.transform();
         } else {

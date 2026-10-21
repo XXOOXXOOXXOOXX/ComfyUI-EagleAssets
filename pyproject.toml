@@ -1,6 +1,6 @@
 [project]
 name = "comfyui-eagle-assets"
-version = "2.3.4"
+version = "2.7.0"
 description = "Multi-folder Eagle media import, visual ordering, nullable reference outputs and image/audio/video/3D export"
 dependencies = ["trimesh>=4.0"]
 requires-python = ">=3.10"

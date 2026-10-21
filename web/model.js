@@ -119,3 +119,24 @@ export function readPreviewCache(cache, state) {
     const items = cache.items.slice(0, 500).map(publicPreview).filter(Boolean), lookup = new Map(items.map(item => [item.id, item]));
     return { items, executionItems: Array.isArray(cache.execution_ids) ? cache.execution_ids.map(id => lookup.get(id)).filter(Boolean) : null };
 }
+
+// Export previews are file references, never pixel data or connection secrets.
+// They live on the serialized node rather than in a global map keyed by node ID.
+export function exportPreview(item) {
+    if (!item || typeof item !== "object" || typeof item.filename !== "string"
+        || /[\\/:]/.test(item.filename) || !["temp", "output"].includes(item.type)) return null;
+    const subfolder = typeof item.subfolder === "string" ? item.subfolder : "";
+    if (/^(?:[\\/]|[a-z]:)/i.test(subfolder) || subfolder.split(/[\\/]/).includes("..")) return null;
+    const result = { filename: item.filename, subfolder, type: item.type };
+    for (const key of ["name", "ext", "media_type", "annotation", "eagle_id", "library_key", "eagle_folder_id", "eagle_ext"]) {
+        if (typeof item[key] === "string") result[key] = item[key];
+    }
+    if (item.eagle_saved === true) result.eagle_saved = true;
+    if (Array.isArray(item.eagle_exclude_ids)) result.eagle_exclude_ids = item.eagle_exclude_ids.filter(id => typeof id === "string");
+    const safe = publicPreview({ ...item, id: "export" });
+    if (safe?.preview) result.preview = safe.preview;
+    // Model bundles need their registered relative resource URLs. Other media
+    // uses /view file descriptors so it survives the media registry's expiry.
+    if (item.media_type === "model" && safe?.model_url) result.model_url = safe.model_url;
+    return result;
+}

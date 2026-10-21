@@ -1,7 +1,7 @@
 import asyncio
 
 from .core import EagleError, parse_settings
-from .runtime import client_for, lock_catalog, prepare_catalog, snapshot_previews, media_file, model_resource, inspect_eagle_item, resolve_export_item
+from .runtime import client_for, lock_catalog, prepare_catalog, snapshot_previews, media_file, model_resource, inspect_eagle_item, resolve_export_item, restore_export_preview, preview_studio_images
 
 
 def register_routes():
@@ -56,6 +56,14 @@ def register_routes():
             ctx = client_for(settings).context()
             return {key: ctx[key] for key in ("library_key", "library_name", "folders")}
         return await handle(request, operation)
+
+    @routes.post("/eagle_assets/export_preview")
+    async def export_preview(request):
+        return await handle(request, lambda body: restore_export_preview(body.get("descriptor")))
+
+    @routes.post("/eagle_assets/image_studio_preview")
+    async def image_studio_preview(request):
+        return await handle(request, lambda body: preview_studio_images(body.get("sources")))
 
     @routes.post("/eagle_assets/catalog")
     async def catalog(request):

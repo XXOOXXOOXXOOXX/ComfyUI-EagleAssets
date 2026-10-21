@@ -1,9 +1,12 @@
 import { canSearch, catalogKey, validCatalog, itemType, MEDIA_TYPES, matchItems, outputSelection, parseState, sortItems, SORT_MODES,
-    makePreviewCache, readPreviewCache } from "./model.js";
+    makePreviewCache, readPreviewCache, exportPreview } from "./model.js";
 import { canPreviewModel, createModelPreview } from "./model_preview.js";
 import { openMediaViewer } from "./media_viewer.js";
 globalThis.EagleAssetsModelPreview = { canPreviewModel, createModelPreview };
 const connectedEditors = new Set();
+const exportEditors = new Set();
+const TARGET_FIELDS = ["host", "token", "library_key", "library_name", "folder_id", "folder_label", "save_eagle"];
+export function refreshExportTargets() { for (const editor of exportEditors) if (!editor.destroyed) editor.render(); }
 addEventListener("eagle-assets-item-updated", event => {
     const item = event.detail;
     for (const editor of connectedEditors) {
@@ -24,7 +27,7 @@ function attachPreview(editor) {
     };
     const open = item => {
         const exported = !!editor.previews?.includes(item); let id = exported ? item.eagle_id : item.id;
-        const settings = () => JSON.stringify({ ...editor.state, library_key: item.library_key || editor.state.library_key, folder_id: item.eagle_folder_id || editor.state.folder_id });
+        const settings = () => { const state = editor.effectiveState?.() || editor.state; return JSON.stringify({ ...state, library_key: item.library_key || state.library_key, folder_id: item.eagle_folder_id || state.folder_id }); };
         const info = async () => {
             const result = id ? await editor.request("item_info", { settings: settings(), item_id: id }) : await editor.request("resolve_export", { settings: settings(), name: item.name, ext: item.eagle_ext || item.ext, excluded_ids: item.eagle_exclude_ids });
             id = result.item.id; if (exported) item.eagle_id = id;
@@ -64,17 +67,18 @@ const STYLE = `
 .ea-paths{max-height:200px}
 .ea-export-media{display:grid;gap:10px;max-height:420px;overflow:auto;margin-top:10px}.ea-export-card{padding:9px;border:1px solid #4d627b;border-radius:7px;background:#19232f}.ea-export-card video{width:100%;max-height:280px;display:block;background:#111821;border-radius:5px}.ea-export-card audio{width:100%;display:block;margin:8px 0}.ea-export-name{font-size:12px;overflow-wrap:anywhere;margin-bottom:7px}.ea-export-links{display:flex;gap:9px;align-items:center;justify-content:space-between;margin-top:7px;font-size:12px}.ea-export-links a{color:#97d5f4}.ea-export-links button{padding:3px 7px;font-size:12px}.ea-model-viewer{width:100%;height:280px;overflow:hidden;background:#17202c;border-radius:5px;position:relative}.ea-model-viewer canvas{display:block;width:100%;height:100%;touch-action:none}.ea-model-status{font-size:12px;color:#b7cadf;overflow-wrap:anywhere;margin-top:7px}.ea-export-file{padding:20px;background:#17202c;text-align:center;color:#afc4dd}
 .ea-panel.ea-node-panel{display:flex;flex-direction:column;height:100%;min-height:0}.ea-node-panel> :not(.ea-grid):not(.ea-export-media){flex-shrink:0}.ea-node-panel>.ea-grid,.ea-node-panel>.ea-export-media{flex:1 1 0;min-height:125px;max-height:none}.ea-node-panel>.ea-grid{align-content:start}.ea-node-panel>.ea-export-media{grid-auto-rows:minmax(min-content,1fr);align-content:stretch}.ea-node-panel .ea-export-card{display:flex;flex-direction:column;min-height:0}.ea-node-panel .ea-export-card>img,.ea-node-panel .ea-export-card>video{flex:1 0 125px;height:125px;min-height:125px;max-height:none!important;object-fit:contain}.ea-node-panel .ea-model-viewer{flex:1 0 240px;min-height:240px;height:240px}.ea-node-panel .ea-export-name,.ea-node-panel .ea-export-links,.ea-node-panel .ea-model-status{flex-shrink:0}
+.ea-card img,.ea-export-card>img{background-color:#eee;background-image:conic-gradient(#aaa 25%,#eee 0 50%,#aaa 0 75%,#eee 0);background-size:16px 16px}
 `;
 function installStyle() {
     if (document.getElementById("eagle-assets-style")) return;
     const style = document.createElement("style"); style.id = "eagle-assets-style"; style.textContent = STYLE; document.head.append(style);
 }
-function createRoot(html) {
+export function createRoot(html) {
     installStyle(); const root = document.createElement("div"); root.className = "ea-panel"; root.innerHTML = html;
     for (const name of ["pointerdown", "keydown", "wheel"]) root.addEventListener(name, e => e.stopPropagation(), { passive: name === "wheel" });
     return root;
 }
-function card(item, imageURL, index, selected, clicked, mediaURL = url => url) {
+export function card(item, imageURL, index, selected, clicked, mediaURL = url => url) {
     const type = itemType(item), interactive = type === "video" || type === "audio";
     const element = document.createElement("div"); element.setAttribute("role", "button"); element.tabIndex = 0;
     element.className = "ea-card";
@@ -102,7 +106,7 @@ function card(item, imageURL, index, selected, clicked, mediaURL = url => url) {
     element.addEventListener("keydown", event => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); select(); } });
     return element;
 }
-const CONNECTION_HEADER = `<div class="ea-row"><label class="ea-grow">Eagle 地址 <input class="ea-host ea-grow" aria-label="Eagle 地址"></label></div>
+const CONNECTION_HEADER = `<div class="ea-row"><label class="ea-grow">Eagle 地址 <input class="ea-host ea-grow" aria-label="Eagle 地址"></label><button class="ea-my-computer" type="button">连接我的电脑</button></div>
  <div class="ea-row"><label class="ea-grow">Token <input class="ea-token ea-grow" type="password" aria-label="Eagle Token" autocomplete="off" placeholder="无需认证可留空"></label><button data-action="connect">读取 / 刷新目录</button></div>
 `;
 const CONNECTION_HTML = CONNECTION_HEADER + `<div class="ea-row"><select class="ea-folder" aria-label="Eagle 目录"><option value="">请先读取目录，再选择文件夹</option></select></div>`;
@@ -121,6 +125,10 @@ class ConnectedEditor {
         connectedEditors.add(this); attachPreview(this);
         this.host.value = this.state.host || "http://localhost:41595"; this.token.value = this.state.token || "";
         this.host.addEventListener("change", () => this.connectionChanged("host", this.host.value.trim()));
+        this.root.querySelector(".ea-my-computer")?.addEventListener("click", () => {
+            if (!globalThis.DesktopBridgeUI) { this.error("请安装 ComfyUI-DesktopBridge 并重启 ComfyUI。"); return; }
+            globalThis.DesktopBridgeUI.open({ capability: "eagle", select: device => { this.host.value = "bridge://" + device.id; this.connectionChanged("host", this.host.value); this.token.value = ""; this.state.token = ""; this.persist(); this.action("connect"); } });
+        });
         this.token.addEventListener("change", () => this.connectionChanged("token", this.token.value));
         if (!this.media) this.bindFolder(this.folder, 0);
         this.root.querySelectorAll("button[data-action]").forEach(button => button.addEventListener("click", () => this.action(button.dataset.action)));
@@ -544,7 +552,7 @@ export class SortEditor {
 export class ExportEditor extends ConnectedEditor {
     constructor(options) {
         super(); this.previews = []; this.modelViewers = []; this.previewGeneration = 0;
-        this.initialize(options, CONNECTION_HTML + `<div class="ea-row"><button class="ea-toggle" data-action="eagle">保存到 Eagle：关闭</button><button class="ea-toggle" data-action="output">保存到 output：关闭</button></div>
+        this.initialize(options, CONNECTION_HTML + `<div class="ea-note ea-target-note"></div><div class="ea-row"><button class="ea-toggle" data-action="eagle">保存到 Eagle：关闭</button><button class="ea-toggle" data-action="output">保存到 output：关闭</button></div>
           <div class="ea-row"><label class="ea-grow">Eagle 标签 <input class="ea-grow" aria-label="Eagle 标签" placeholder="逗号分隔，可留空"></label></div>
           <label class="ea-annotation">Eagle 注释 <textarea aria-label="Eagle 注释" placeholder="可填写完整提示词；连接 annotation 接口时使用接口内容"></textarea></label>
           <div class="ea-status" role="status"></div><div class="ea-note">预览始终开启。两个保存开关均关闭时，只生成 ComfyUI 临时预览。</div><div class="ea-export-media" aria-label="导出媒体预览"><div class="ea-empty">执行后显示实际导出文件的预览，双击放大</div></div><div class="ea-error" role="alert"></div>`);
@@ -553,20 +561,49 @@ export class ExportEditor extends ConnectedEditor {
         this.annotation = this.root.querySelector('[aria-label="Eagle 注释"]'); this.annotation.value = this.state.annotation || "";
         this.annotation.addEventListener("input", () => { this.state.annotation = this.annotation.value; this.persist(); });
         this.tags.placeholder = "逗号分隔；连接 tags 接口时使用接口内容";
+        exportEditors.add(this);
         this.connect();
     }
+    inheritedState(seen = new Set()) {
+        if (seen.has(this)) return null;
+        seen.add(this);
+        const upstream = this.upstreamTarget?.();
+        return upstream && !seen.has(upstream) ? upstream.effectiveState(seen) : null;
+    }
+    effectiveState(seen = new Set()) {
+        const inherited = this.inheritedState(seen);
+        return inherited ? { ...this.state, ...Object.fromEntries(TARGET_FIELDS.map(key => [key, inherited[key]])) } : { ...this.state };
+    }
+    persist() { super.persist(); refreshExportTargets(); }
+    connect() { if (this.upstreamTarget?.()) { this.render(); return Promise.resolve(true); } return super.connect(); }
     async action(action) {
         if (action === "connect") return this.connect();
+        if (action === "eagle" && this.upstreamTarget?.()) return;
         if (action === "eagle") this.state.save_eagle = !this.state.save_eagle;
         if (action === "output") this.state.save_output = !this.state.save_output;
         this.persist(); this.render();
     }
     render() {
         if (!this.root) return;
-        for (const [action, field, name] of [["eagle", "save_eagle", "Eagle"], ["output", "save_output", "output"]]) {
-            const button = this.root.querySelector(`[data-action="${action}"]`); button.dataset.on = String(!!this.state[field]); button.textContent = `保存到 ${name}：${this.state[field] ? "开启" : "关闭"}`;
+        const inherited = this.inheritedState(), state = this.effectiveState();
+        const key = JSON.stringify([!!inherited, ...TARGET_FIELDS.map(field => state[field])]);
+        if (key !== this.targetKey) {
+            if (inherited && this.busy) this.cancelRequests();
+            this.targetKey = key;
+            this.host.value = state.host || "http://localhost:41595"; this.token.value = state.token || "";
+            if (inherited) {
+                const option = document.createElement("option"); option.value = state.folder_id || "";
+                option.textContent = state.folder_label || (state.folder_id === "__ALL__" ? "整个素材库（导出至根目录）" : state.folder_id) || "上游尚未选择目录";
+                this.folder.replaceChildren(option); this.folder.value = option.value;
+            } else this.populateFolders(this.folders || []);
         }
-        this.root.querySelector('[data-action="connect"]').disabled = !!this.busy;
+        for (const control of [this.host, this.token, this.folder, this.root.querySelector(".ea-my-computer"), this.root.querySelector('[data-action="eagle"]')]) if (control) control.disabled = !!inherited;
+        const note = this.root.querySelector(".ea-target-note");
+        note.textContent = inherited ? "已沿用上游 Eagle 目录与保存开关：" + (state.folder_label || state.folder_id || "尚未选择目录") : "eagle_target 输出可连接下一个导出的同名输入，共用 Eagle 目录。";
+        for (const [action, field, name] of [["eagle", "save_eagle", "Eagle"], ["output", "save_output", "output"]]) {
+            const button = this.root.querySelector(`[data-action="${action}"]`); button.dataset.on = String(!!state[field]); button.textContent = `保存到 ${name}：${state[field] ? "开启" : "关闭"}`;
+        }
+        this.root.querySelector('[data-action="connect"]').disabled = !!inherited || !!this.busy;
         this.root.querySelector(".ea-status").textContent = this.lastStatus || "等待工作流执行 · 两个保存位置独立控制";
     }
     renderMedia() {
@@ -593,7 +630,7 @@ export class ExportEditor extends ConnectedEditor {
                 const viewport = document.createElement("div"); viewport.className = "ea-model-viewer";
                 const status = document.createElement("div"); status.className = "ea-model-status"; status.textContent = "正在加载实际 3D 文件…";
                 element.append(viewport, status);
-                const viewer = createModelPreview(viewport, { url: this.mediaURL(item.preview_url || descriptorURL), ext, apiURL: this.mediaURL }); this.modelViewers.push(viewer);
+                const viewer = createModelPreview(viewport, { url: item.model_url ? this.mediaURL(item.model_url) : url, ext, apiURL: this.mediaURL }); this.modelViewers.push(viewer);
                 viewer.ready.then(() => {
                     if (this.destroyed || generation !== this.previewGeneration) return;
                     status.textContent = "拖动旋转 · 滚轮缩放 · 右键平移";
@@ -618,14 +655,40 @@ export class ExportEditor extends ConnectedEditor {
         this.lastStatus = message.eagle_status?.[0] || "执行完成";
         if (this.mediaType) {
             const media = message.eagle_media; this.previews = Array.isArray(media?.[0]) ? media[0] : Array.isArray(media) ? media : (message.images || []).map(item => ({ ...item, name: item.filename, media_type: "image" }));
+            this.previews = this.previews.map(exportPreview).filter(Boolean);
+            this.cachePreview();
             this.renderMedia();
         }
         this.render();
     }
-    restore(raw) { this.state = parseState(raw); this.host.value = this.state.host; this.token.value = this.state.token || ""; this.tags.value = this.state.tags || ""; this.annotation.value = this.state.annotation || ""; this.populateFolders(this.folders || []); this.render(); }
+    cachePreview() {
+        if (!this.destroyed) this.writePreview?.({ version: 1, media_type: this.mediaType, status: this.lastStatus || "", items: this.previews.map(exportPreview).filter(Boolean) });
+    }
+    restorePreview() {
+        const cache = this.readPreview?.();
+        this.previews = cache?.version === 1 && cache.media_type === this.mediaType && Array.isArray(cache.items) ? cache.items.map(exportPreview).filter(Boolean) : [];
+        this.lastStatus = typeof cache?.status === "string" && this.previews.length ? cache.status : "";
+        if (this.mediaType === "model" && this.previews.length) this.refreshModelPreviews();
+        else this.renderMedia();
+    }
+    async refreshModelPreviews() {
+        const previews = this.previews;
+        // Re-register exported bundles after a server restart or registry expiry.
+        // Late replies belong only to this editor and this execution's previews.
+        await Promise.all(previews.map(async item => {
+            try {
+                const result = await this.request("export_preview", { descriptor: { filename: item.filename, subfolder: item.subfolder, type: item.type } });
+                if (this.destroyed || this.previews !== previews) return;
+                item.model_url = result.model_url;
+            } catch { /* Existing preview/download still works while files remain available. */ }
+        }));
+        if (!this.destroyed && this.previews === previews) { this.cachePreview(); this.renderMedia(); }
+    }
+    restore(raw) { this.state = parseState(raw); this.targetKey = undefined; this.host.value = this.state.host; this.token.value = this.state.token || ""; this.tags.value = this.state.tags || ""; this.annotation.value = this.state.annotation || ""; this.populateFolders(this.folders || []); this.restorePreview(); this.render(); refreshExportTargets(); }
     destroy() {
         ++this.previewGeneration; this.modelViewers.forEach(viewer => viewer.dispose()); this.modelViewers = [];
         this.root.querySelectorAll("audio,video").forEach(player => { player.pause(); player.removeAttribute("src"); player.load(); });
         super.destroy();
+        exportEditors.delete(this); refreshExportTargets();
     }
 }

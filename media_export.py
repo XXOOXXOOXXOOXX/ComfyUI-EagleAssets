@@ -19,6 +19,7 @@ import torch
 from .core import EagleError, MEDIA_EXTENSIONS, _run_ffmpeg, folder_ids, parse_settings, validate_model_resources
 from .nodes import DEFAULT_EXPORT, parse_tags, redact_metadata
 from .runtime import client_for, preview_item, _media_url, model_preview_url
+from .export_target import TARGET_TYPE, TARGET_INPUT, resolve_target, target_result
 
 FILE3D_INPUT_TYPES = ",".join(("FILE_3D", "FILE_3D_GLB", "FILE_3D_GLTF", "FILE_3D_FBX", "FILE_3D_OBJ", "FILE_3D_STL",
                              "FILE_3D_USDZ", "FILE_3D_PLY", "FILE_3D_SPLAT", "FILE_3D_SPZ", "FILE_3D_KSPLAT",
@@ -29,7 +30,7 @@ def _schema(required, optional=None):
     return {"required": {**required, "filename_prefix": ("STRING", {"default": "ComfyUI"}),
                          "settings": ("STRING", {"default": DEFAULT_EXPORT})},
             "optional": {**(optional or {}), "tags": ("STRING", {"forceInput": True}),
-                         "annotation": ("STRING", {"forceInput": True})},
+                         "annotation": ("STRING", {"forceInput": True}), "eagle_target": TARGET_INPUT},
             "hidden": {"prompt": "PROMPT", "extra_pnginfo": "EXTRA_PNGINFO"}}
 
 
@@ -58,7 +59,7 @@ def _metadata_args(metadata):
 
 
 def _destination(settings):
-    data = parse_settings(settings)
+    data = resolve_target(settings)
     client = None
     if data.get("save_eagle"):
         if not data.get("folder_id"):
@@ -68,6 +69,7 @@ def _destination(settings):
         folder_ids(context["folders"], data["folder_id"], False)
         if data.get("library_key") and data["library_key"] != context["library_key"]:
             raise EagleError("Eagle 当前素材库已变化，请重新选择导出目录。")
+        data["library_key"] = context["library_key"]
     return data, client
 
 
@@ -261,30 +263,32 @@ def _finish(paths, descriptors, data, client, tags, annotation, kind, eagle_path
         ui.update(images=native, animated=(True,), video=native)
     else:
         ui["audio" if kind == "audio" else "3d"] = native
-    return {"ui": ui}
+    return target_result({"ui": ui}, data)
 
 
-def _empty(kind):
-    return {"ui": {"eagle_media": [[]], "eagle_status": ["此接口没有素材，跳过预览和保存。"],
-                   "audio" if kind == "audio" else "images" if kind == "video" else "3d": []}}
+def _empty(kind, data):
+    return target_result({"ui": {"eagle_media": [[]], "eagle_status": ["此接口没有素材，跳过预览和保存。"],
+                   "audio" if kind == "audio" else "images" if kind == "video" else "3d": []}}, data)
 
 
 class EagleAudioExport:
     @classmethod
     def INPUT_TYPES(cls):
         return _schema({"audio": ("AUDIO",), "format": (["wav", "flac", "mp3"], {"default": "wav"})})
-    RETURN_TYPES = ()
+    RETURN_TYPES = (TARGET_TYPE,)
+    RETURN_NAMES = ("eagle_target",)
     FUNCTION, CATEGORY, OUTPUT_NODE = "save", "Eagle Assets", True
 
-    def save(self, audio, format="wav", filename_prefix="ComfyUI", settings=DEFAULT_EXPORT, tags=None, annotation=None, prompt=None, extra_pnginfo=None):
+    def save(self, audio, format="wav", filename_prefix="ComfyUI", settings=DEFAULT_EXPORT, tags=None, annotation=None, prompt=None, extra_pnginfo=None, eagle_target=None):
+        data = resolve_target(settings, eagle_target)
         if audio is None:
-            return _empty("audio")
+            return _empty("audio", data)
         waveform, rate = _audio_values(audio)
         if waveform.shape[0] == 0:
-            return _empty("audio")
+            return _empty("audio", data)
         if format not in {"wav", "flac", "mp3"}:
             raise EagleError("未知音频保存格式。")
-        data, client = _destination(settings)
+        data, client = _destination(data)
         metadata = _metadata(prompt, extra_pnginfo)
         paths, descriptors, saved_rate = [], [], rate
         with tempfile.TemporaryDirectory(prefix="eagle_audio_export_") as directory:
@@ -304,14 +308,16 @@ class EagleVideoExport:
         return _schema({"format": (["mp4", "webm", "mkv"], {"default": "mp4"}), "fps": ("FLOAT", {"default": 24, "min": 1, "max": 120})},
                        {"video": ("VIDEO", {"tooltip": "原生 VIDEO；video、path、frames 三者只能连接一种。"}),
                         "path": ("STRING", {"forceInput": True}), "frames": ("IMAGE",), "audio": ("AUDIO", {"tooltip": "仅为 frames 帧批添加配音；原生VIDEO已包含音轨。"})})
-    RETURN_TYPES = ()
+    RETURN_TYPES = (TARGET_TYPE,)
+    RETURN_NAMES = ("eagle_target",)
     FUNCTION, CATEGORY, OUTPUT_NODE = "save", "Eagle Assets", True
 
     def save(self, format="mp4", fps=24, filename_prefix="ComfyUI", settings=DEFAULT_EXPORT, video=None, path=None, frames=None, audio=None,
-             tags=None, annotation=None, prompt=None, extra_pnginfo=None):
+             tags=None, annotation=None, prompt=None, extra_pnginfo=None, eagle_target=None):
+        data = resolve_target(settings, eagle_target)
         sources = [source for source in (video, path if path else None, frames) if source is not None]
         if not sources:
-            return _empty("video")
+            return _empty("video", data)
         if len(sources) != 1:
             raise EagleError("video、path 和 frames 只能提供一种视频来源，请断开多余输入。")
         if audio is not None and frames is None:
@@ -326,10 +332,10 @@ class EagleVideoExport:
         if frames is not None:
             frames = _frames(frames, fps)
             if frames.shape[0] == 0:
-                return _empty("video")
+                return _empty("video", data)
         if video is not None and not callable(getattr(video, "save_to", None)):
             raise EagleError("video 输入必须是原生 VIDEO 对象。")
-        data, client = _destination(settings)
+        data, client = _destination(data)
         metadata = _metadata(prompt, extra_pnginfo)
         with tempfile.TemporaryDirectory(prefix="eagle_video_export_") as directory:
             staged = Path(directory) / ("video." + format)
@@ -463,14 +469,16 @@ class EagleModelExport:
     @classmethod
     def INPUT_TYPES(cls):
         return _schema({}, {"model_3d": (FILE3D_INPUT_TYPES,), "path": ("STRING", {"forceInput": True}), "mesh": ("MESH",)})
-    RETURN_TYPES = ()
+    RETURN_TYPES = (TARGET_TYPE,)
+    RETURN_NAMES = ("eagle_target",)
     FUNCTION, CATEGORY, OUTPUT_NODE = "save", "Eagle Assets", True
 
     def save(self, filename_prefix="ComfyUI", settings=DEFAULT_EXPORT, model_3d=None, path=None, mesh=None,
-             tags=None, annotation=None, prompt=None, extra_pnginfo=None):
+             tags=None, annotation=None, prompt=None, extra_pnginfo=None, eagle_target=None):
+        data = resolve_target(settings, eagle_target)
         sources = [source for source in (model_3d, path if path else None, mesh) if source is not None]
         if not sources:
-            return _empty("model")
+            return _empty("model", data)
         if len(sources) != 1:
             raise EagleError("model_3d、path 和 mesh 只能提供一种模型来源。")
         source_path = Path(path).resolve() if path else None
@@ -490,8 +498,8 @@ class EagleModelExport:
             if not isinstance(vertices, torch.Tensor) or vertices.ndim != 3:
                 raise EagleError("mesh 需要官方 MESH 类型的批次顶点与面数据。")
             if vertices.shape[0] == 0:
-                return _empty("model")
-        data, client = _destination(settings)
+                return _empty("model", data)
+        data, client = _destination(data)
         metadata = _metadata(prompt, extra_pnginfo)
         paths, descriptors, eagle_paths, converted = [], [], [], False
         with tempfile.TemporaryDirectory(prefix="eagle_model_export_") as directory:
@@ -527,7 +535,7 @@ class EagleModelExport:
                     target.parent.mkdir(); target.write_bytes(payload)
                     staged.append(target)
             if not staged:
-                return _empty("model")
+                return _empty("model", data)
             # Prepare Eagle packages before any persistent output is written.
             for index, source in enumerate(staged):
                 companions = model_resources(source)

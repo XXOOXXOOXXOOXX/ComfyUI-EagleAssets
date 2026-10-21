@@ -25,6 +25,9 @@ def snapshot_store():
 
 
 def client_for(settings):
+    if str(settings.get("host", "")).startswith("bridge://"):
+        from .remote import RemoteEagleClient
+        return RemoteEagleClient(settings)
     return EagleClient(settings.get("host", "http://localhost:41595"), settings.get("token", ""))
 
 
@@ -89,11 +92,34 @@ def model_resource(model_id, resource):
     return path, mime or mimetypes.guess_type(path.name)[0] or "application/octet-stream"
 
 
+def restore_export_preview(descriptor):
+    """Renew resource URLs using a ComfyUI output/temp file descriptor only."""
+    import folder_paths
+    from .core import MEDIA_EXTENSIONS
+    if not isinstance(descriptor, dict) or descriptor.get("type") not in {"output", "temp"}:
+        raise EagleError("导出预览描述无效。")
+    name, subfolder = descriptor.get("filename"), descriptor.get("subfolder", "")
+    if not isinstance(name, str) or not name or any(char in name for char in "\\/:") or not isinstance(subfolder, str):
+        raise EagleError("导出预览文件名无效。")
+    root = Path(folder_paths.get_output_directory() if descriptor["type"] == "output" else folder_paths.get_temp_directory()).resolve()
+    relative = Path(subfolder)
+    if relative.is_absolute() or relative.drive or ".." in relative.parts:
+        raise EagleError("导出预览路径无效。")
+    path = (root / relative / name).resolve()
+    if not path.is_relative_to(root) or not path.is_file() or path.suffix[1:].lower() not in MEDIA_EXTENSIONS["model"]:
+        raise EagleError("导出模型文件已不存在或不可读取。")
+    # Exporters keep each model and its resources in a private bundle directory.
+    # Avoid registering arbitrary siblings at the root of output/temp.
+    if path.parent == root:
+        raise EagleError("导出模型缺少独立资源目录。")
+    return {"model_url": model_preview_url(path)}
+
+
 def _thumbnail(path, kind):
     path = Path(path)
     if kind == "image":
         with Image.open(path) as source:
-            return ImageOps.exif_transpose(source).convert("RGB")
+            return ImageOps.exif_transpose(source).convert("RGBA" if "A" in source.getbands() or "transparency" in source.info else "RGB")
     candidates = sorted(file for file in path.parent.iterdir() if file.is_file() and "thumbnail" in file.stem.lower()
                         and file.suffix.lower() in {".png", ".jpg", ".jpeg", ".webp"} and file.resolve().is_relative_to(path.parent.resolve()))
     for candidate in candidates:
@@ -130,12 +156,16 @@ def preview_item(item, path=None, image=None):
     path = path or item.get("_path")
     temp = Path(folder_paths.get_temp_directory())
     temp.mkdir(parents=True, exist_ok=True)
-    filename = "eagle_asset_preview_" + uuid.uuid4().hex + ".jpg"
+    filename = "eagle_asset_preview_" + uuid.uuid4().hex
     result = public_item(item)
     kind = media_type(item)
     image = image or (_thumbnail(path, kind) if path else None)
     result["preview"] = None
     if image is not None:
+        image = image.copy()
+        alpha = "A" in image.getbands() or "transparency" in image.info
+        image = image.convert("RGBA" if alpha else "RGB")
+        filename += ".png" if alpha else ".jpg"
         width, height = image.size
         if kind == "image":
             result.update(width=width, height=height)
@@ -172,6 +202,8 @@ def inspect_eagle_item(settings, item_id, name=None):
         except EagleError:
             pass
         item = client.request("item/info", {"id": item_id})
+        if item.get("name") != name and str(settings.get("host", "")).startswith("bridge://"):
+            raise EagleError("远程 Eagle 未接受改名，请在 Eagle 内改名后刷新。")
         if item.get("name") != name:
             _rename_with_companion(ctx["root"], item_id, name)
             item = client.request("item/info", {"id": item_id})
@@ -265,6 +297,71 @@ def snapshot_previews(sid):
     return [preview_item(item) for item in items]
 
 
+def publish_studio_images(ordered):
+    """Persist actual tensor pixels as a snapshot, independent of Eagle or temp."""
+    import tempfile
+    items = []
+    with tempfile.TemporaryDirectory(prefix="eagle_studio_images_") as directory:
+        for slot, batch in ordered:
+            if not hasattr(batch, "ndim") or batch.ndim != 4 or batch.shape[-1] not in {1, 3, 4}:
+                raise EagleError(f"图片接口 {slot} 需要标准 IMAGE 图像批次。")
+            for index, frame in enumerate(batch):
+                pixels = np.rint(frame.detach().cpu().numpy().clip(0, 1) * 255).astype(np.uint8)
+                if pixels.shape[-1] == 1:
+                    pixels = pixels[:, :, 0]
+                path = Path(directory) / f"image_{slot}_{index + 1}.png"
+                Image.fromarray(pixels).save(path)
+                items.append({"id": f"image_{slot}_{index + 1}", "name": f"图片 {slot}" + (f" · {index + 1}" if len(batch) > 1 else ""),
+                              "ext": "png", "media_type": "image", "_path": str(path)})
+        if not items:
+            return {"items": []}
+        snapshot = snapshot_store().create(items)
+    return {"snapshot_id": snapshot["snapshot_id"], "items": snapshot_previews(snapshot["snapshot_id"])}
+
+
+def preview_studio_images(sources):
+    """Read registered ComfyUI files without queuing or executing a workflow."""
+    import folder_paths
+    from .core import MEDIA_EXTENSIONS
+    if not isinstance(sources, list) or any(not isinstance(source, dict) or type(source.get("slot")) is not int or source["slot"] < 1 for source in sources):
+        raise EagleError("图片输入列表无效。")
+    items, slots, snapshots = [], set(), {}
+    for source in sorted(sources, key=lambda value: value.get("slot", 0) if isinstance(value, dict) else 0):
+        if not isinstance(source, dict) or type(source.get("slot")) is not int or source["slot"] < 1 or source["slot"] in slots:
+            raise EagleError("图片接口编号无效。")
+        slot = source["slot"]; slots.add(slot)
+        if source.get("snapshot_id"):
+            sid = source["snapshot_id"]
+            if not isinstance(sid, str):
+                raise EagleError("图片快照无效。")
+            if sid not in snapshots:
+                snapshots[sid] = snapshot_store().items(sid)[0]
+            items.extend(item for item in snapshots[sid] if item["id"].startswith(f"image_{slot}_"))
+            continue
+        files = source.get("files", [])
+        if not isinstance(files, list):
+            raise EagleError("图片文件列表无效。")
+        for index, descriptor in enumerate(files):
+            if not isinstance(descriptor, dict) or descriptor.get("type") not in {"input", "output", "temp"}:
+                raise EagleError("图片文件描述无效。")
+            name, subfolder = descriptor.get("filename"), descriptor.get("subfolder", "")
+            if not isinstance(name, str) or not name or any(char in name for char in "\\/:") or not isinstance(subfolder, str):
+                raise EagleError("图片文件名无效。")
+            root = Path(folder_paths.get_directory_by_type(descriptor["type"])).resolve()
+            relative = Path(subfolder)
+            if relative.is_absolute() or relative.drive or ".." in relative.parts:
+                raise EagleError("图片文件路径无效。")
+            path = (root / relative / name).resolve()
+            if not path.is_relative_to(root) or not path.is_file() or path.suffix[1:].lower() not in MEDIA_EXTENSIONS["image"]:
+                raise EagleError("图片文件不存在或格式不受支持。")
+            items.append({"id": f"image_{slot}_{index + 1}", "name": f"图片 {slot}" + (f" · {index + 1}" if len(files) > 1 else ""),
+                          "ext": "png", "media_type": "image", "_path": str(path)})
+    if not items:
+        return {"items": []}
+    snapshot = snapshot_store().create(items)
+    return {"snapshot_id": snapshot["snapshot_id"], "items": snapshot_previews(snapshot["snapshot_id"])}
+
+
 def studio_catalog(catalog_id=None, snapshot_id=None):
     """A lightweight descriptor for the loaded gallery, independent from tensor outputs."""
     if bool(catalog_id) == bool(snapshot_id):
@@ -282,7 +379,7 @@ def resolve_studio_media(refs):
     """Resolve only opaque catalog/snapshot references; caller paths are never accepted."""
     if not isinstance(refs, list) or len(refs) > 32:
         raise EagleError("一次最多引用 32 个 Eagle 素材。")
-    results, seen = [], set()
+    results, seen, sources = [], set(), {}
     for ref in refs:
         if not isinstance(ref, dict) or set(ref) - {"catalog_id", "snapshot_id", "item_id"}:
             raise EagleError("Eagle 素材引用格式无效。")
@@ -292,15 +389,18 @@ def resolve_studio_media(refs):
         key = (cid or sid, item_id)
         if key in seen:
             continue
-        if sid:
-            items, _ = snapshot_store().items(sid)
-        else:
-            with _mutex:
-                entry = _catalogs.get(cid)
-            if not entry or time.monotonic() - entry["time"] > CATALOG_TTL:
-                raise EagleError("Eagle 预览会话已过期，请刷新导入预览。")
-            items = entry["items"]
-        item = next((item for item in items if item["id"] == item_id), None)
+        source_key = (cid, sid)
+        if source_key not in sources:
+            if sid:
+                items, _ = snapshot_store().items(sid)
+            else:
+                with _mutex:
+                    entry = _catalogs.get(cid)
+                if not entry or time.monotonic() - entry["time"] > CATALOG_TTL:
+                    raise EagleError("Eagle 预览会话已过期，请刷新导入预览。")
+                items = entry["items"]
+            sources[source_key] = {item["id"]: item for item in items}
+        item = sources[source_key].get(item_id)
         if item is None:
             raise EagleError("所选 Eagle 素材不在已登记的目录中。")
         path = Path(item["_path"])

@@ -1,7 +1,7 @@
 from .nodes import (
     EagleAssetImport, EagleAssetSort, EagleAssetSplit, EagleAssetExport,
     EagleMediaImport, EagleVideoSort, EagleAudioSort, EagleModelSort,
-    EagleVideoSplit, EagleAudioSplit, EagleModelSplit, EagleModelToFile3D, EagleStudioBridge,
+    EagleVideoSplit, EagleAudioSplit, EagleModelSplit, EagleModelToFile3D, EagleStudioBridge, EagleImageStudioBridge,
 )
 from .media_export import EagleAudioExport, EagleVideoExport, EagleModelExport
 
@@ -22,6 +22,7 @@ NODE_CLASS_MAPPINGS = {
     "EagleVideoExport": EagleVideoExport,
     "EagleModelExport": EagleModelExport,
     "EagleStudioBridge": EagleStudioBridge,
+    "EagleImageStudioBridge": EagleImageStudioBridge,
 }
 NODE_DISPLAY_NAME_MAPPINGS = {
     "EagleAssetImport": "Eagle 图片导入 · Assets",
@@ -40,6 +41,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "EagleVideoExport": "Eagle 视频导出 / 保存 / 预览",
     "EagleModelExport": "Eagle 3D 模型导出 / 保存 / 预览",
     "EagleStudioBridge": "Eagle 创作素材桥 · Ollama",
+    "EagleImageStudioBridge": "图片直连素材桥 · Ollama",
 }
 WEB_DIRECTORY = "./web"
 

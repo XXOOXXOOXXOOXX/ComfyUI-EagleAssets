@@ -102,7 +102,7 @@ class BackendTests(unittest.TestCase):
             before_exports = len(self.fixture.exports); before_output = len(list((root / "output").iterdir()))
             data = self.fixture.settings(folder_id="results", save_eagle=eagle, save_output=output)
             result = node.save(image, settings=json.dumps(data), prompt={"inputs": {"settings": json.dumps({"token": "must-not-leak"})}})
-            self.assertNotIn("images", result["ui"], "native and custom image previews must not both render")
+            self.assertEqual(result["ui"]["images"], [{key: preview[key] for key in ("filename", "subfolder", "type")} for preview in result["ui"]["eagle_media"][0]], "native Assets/history descriptors must remain available")
             descriptors = result["ui"]["eagle_media"][0]
             self.assertEqual(len(descriptors), 1)
             self.assertEqual(descriptors[0]["type"], "output" if output else "temp")
